@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: node --test "tests/**/*.test.mjs"
+      - name: Script tests
+        run: bash tests/scripts.test.sh
+
+  # Model runs inside Quickshell's QML engine, which parses less JavaScript
+  # than Node — this job loads it in that engine, on the distro Omarchy runs.
+  qml-smoke:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt
+        run: pacman -Syu --noconfirm qt6-declarative
+      - name: QML engine smoke
+        run: bash tests/qml-smoke.sh
