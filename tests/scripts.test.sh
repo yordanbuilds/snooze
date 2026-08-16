@@ -41,6 +41,12 @@ check "rejects bad until" 1 "$HELPER" block --hosts-file "$TMP/hosts" tomorrow x
 check "rejects no domains" 1 "$HELPER" block --hosts-file "$TMP/hosts" 0
 mapfile -t many < <(seq 1 501 | sed 's/^/d/; s/$/.com/')
 check "rejects >500 domains" 1 "$HELPER" block --hosts-file "$TMP/hosts" 0 "${many[@]}"
+# The grammar is ASCII whatever the caller's locale says: under en_US.UTF-8 a
+# bracket expression like [a-z] also matches é, and the helper would accept a
+# name the widget's jq mirror refuses — so the two would disagree about what
+# is blockable. LC_ALL=C in the helper is what keeps them identical.
+check "rejects a non-ascii domain under a UTF-8 locale" 1 \
+  env LC_ALL=en_US.UTF-8 "$HELPER" block --hosts-file "$TMP/hosts" 0 "évil.com"
 
 # --- sweep: only removes an expired block
 hosts
@@ -54,11 +60,20 @@ check "block indefinite" 0 "$HELPER" block --hosts-file "$TMP/hosts" 0 x.com
 check "sweep leaves indefinite" 0 "$HELPER" sweep --hosts-file "$TMP/hosts"
 grep -q 'x.com' "$TMP/hosts" || { echo "FAIL: sweep removed indefinite block"; fails=$((fails+1)); }
 
-# --- unterminated block: never swallow content below it
+# --- unterminated block: take snooze's own orphan marker, never the content
+# below it. Leaving the marker would leave a phantom session behind — status
+# reads its until=, and nothing but a fresh block would ever clear it.
 printf '127.0.0.1 localhost\n# >>> snooze >>> until=5\n0.0.0.0 x.com\n10.0.0.5 intranet\n' >"$TMP/hosts"
-check "unblock leaves unterminated block alone" 0 "$HELPER" unblock --hosts-file "$TMP/hosts"
+check "unblock clears an orphan begin marker" 0 "$HELPER" unblock --hosts-file "$TMP/hosts"
 grep -q '^10.0.0.5 intranet$' "$TMP/hosts" || { echo "FAIL: content below unterminated marker lost"; fails=$((fails+1)); }
-grep -q '>>> snooze' "$TMP/hosts" || { echo "FAIL: unterminated marker must stay as ordinary content"; fails=$((fails+1)); }
+grep -q '>>> snooze' "$TMP/hosts" && { echo "FAIL: orphan begin marker survived unblock"; fails=$((fails+1)); }
+
+# --- sweep converges too: an expired block with an orphan marker under it
+# leaves neither behind, and the ordinary line below still stands.
+printf '127.0.0.1 localhost\n# >>> snooze >>> until=1000\n0.0.0.0 x.com\n# <<< snooze <<<\n# >>> snooze >>> until=5\n10.0.0.5 intranet\n' >"$TMP/hosts"
+check "sweep clears an orphan marker with the expired block" 0 "$HELPER" sweep --hosts-file "$TMP/hosts"
+grep -q 'snooze' "$TMP/hosts" && { echo "FAIL: sweep left a marker behind"; fails=$((fails+1)); }
+grep -q '^10.0.0.5 intranet$' "$TMP/hosts" || { echo "FAIL: sweep lost the content under the orphan marker"; fails=$((fails+1)); }
 
 # --- a stray end marker above a truncated block must not re-arm the swallow
 # (same case as Model.parseHosts guards in tests/model.test.mjs)
@@ -120,6 +135,14 @@ grep -q 'snooze' "$TMP/hosts" && { echo "FAIL: block left after stop"; fails=$((
 [[ -f "$TMP/state/session.json" ]] && { echo "FAIL: session left after stop"; fails=$((fails+1)); }
 check "status json idle" 0 "$SNOOZE" status --json
 jq -e '.enabled == false and .class == "disabled"' "$TMP/out" >/dev/null || { echo "FAIL: idle status"; fails=$((fails+1)); }
+
+# --- an orphan begin marker is not a session. Counting one would park the
+# widget on a countdown Stop could not clear (same rule as Model.hasEndAfter).
+printf '127.0.0.1 localhost\n# >>> snooze >>> until=9999999999\n0.0.0.0 x.com\n' >"$TMP/hosts"
+check "status ignores an orphan begin marker" 0 "$SNOOZE" status --json
+jq -e '.enabled == false and .until == 0 and .remaining == null' "$TMP/out" >/dev/null \
+  || { echo "FAIL: orphan marker read as a live session: $(cat "$TMP/out")"; fails=$((fails+1)); }
+hosts
 
 check "start forever" 0 "$SNOOZE" start --forever
 grep -q 'until=0' "$TMP/hosts" || { echo "FAIL: forever until"; fails=$((fails+1)); }
@@ -226,6 +249,13 @@ uninstall_with() { # <answer to "Remove Snooze?"> <answer to "delete groups?">
         "$SNOOZE" uninstall
 }
 
+uninstall_relative() { # the same "yes to everything", with a *relative* groups
+                       # path — its directory resolves to ".", which is nobody's
+                       # idea of "my groups"
+  printf 'y\ny\n' | ( cd "$TMP/cfg/snooze" \
+    && env PATH="$TMP/shim:$PATH" SNOOZE_GROUPS_FILE=groups.json "$SNOOZE" uninstall )
+}
+
 seed_installed_state() { # what a set-up box looks like, for one uninstall run
   mkdir -p "$TMP/cfg/snooze" "$TMP/bin" "$TMP/state"
   cp "$HERE/defaults/groups.json" "$TMP/cfg/snooze/groups.json"
@@ -281,12 +311,30 @@ if [[ $(PATH="$TMP/shim:$PATH" sudo --canary 2>/dev/null) == STUB ]]; then
     grep -q '^plugin remove yordanbuilds.snooze --yes$' "$SNOOZE_OMARCHY_LOG" \
       || { echo "FAIL: the plugin was not handed to omarchy: $(cat "$SNOOZE_OMARCHY_LOG")"; fails=$((fails+1)); }
 
-    # --- "yes, and take my groups too"
+    # --- "yes, and take my groups too": the file goes, and the directory only
+    # follows it because snooze was the only thing in there
     seed_installed_state
-    check "uninstall deletes the config directory on yes" 0 uninstall_with y y
-    [[ -e $TMP/cfg/snooze ]] && { echo "FAIL: config directory survived a yes"; fails=$((fails+1)); }
+    check "uninstall deletes the groups file on yes" 0 uninstall_with y y
+    [[ -e $TMP/cfg/snooze ]] && { echo "FAIL: an emptied config directory survived a yes"; fails=$((fails+1)); }
     grep -q '^plugin remove yordanbuilds.snooze --yes$' "$SNOOZE_OMARCHY_LOG" \
       || { echo "FAIL: the plugin was not handed to omarchy"; fails=$((fails+1)); }
+
+    # --- the same yes, with somebody else's file in that directory: the
+    # consent was about your groups, so only the groups file goes
+    seed_installed_state
+    echo 'not ours' >"$TMP/cfg/snooze/notes.txt"
+    check "uninstall spares a config directory that is not only ours" 0 uninstall_with y y
+    [[ -e $TMP/cfg/snooze/groups.json ]] && { echo "FAIL: groups file survived a yes"; fails=$((fails+1)); }
+    [[ -f $TMP/cfg/snooze/notes.txt ]] || { echo "FAIL: uninstall deleted a file that was never ours"; fails=$((fails+1)); }
+    rm -rf "$TMP/cfg/snooze"
+
+    # --- a relative groups path resolves to a directory nobody consented to
+    # ("groups.json" -> "."): never even offer the purge
+    seed_installed_state
+    check "uninstall never offers to purge a relative config path" 0 uninstall_relative
+    grep -q 'Also delete your groups' "$TMP/out" \
+      && { echo "FAIL: offered to delete a relative config directory"; fails=$((fails+1)); }
+    [[ -f $TMP/cfg/snooze/groups.json ]] || { echo "FAIL: a relative groups path was purged anyway"; fails=$((fails+1)); }
 
     # --- a `snooze` in BIN_DIR that setup did not link is not ours to delete
     seed_installed_state

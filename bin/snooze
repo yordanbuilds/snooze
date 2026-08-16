@@ -21,6 +21,8 @@ HELPER_BIN=${SNOOZE_HELPER_BIN:-$HELPER_TARGET}
 BIN_DIR=${SNOOZE_BIN_DIR:-$HOME/.local/bin} # where `snooze setup` links this CLI
 UNIT=snooze-wake
 MAX_DOMAINS=500
+BEGIN_MARK='# >>> snooze >>>' # keep in sync with the helper and Model.mjs
+END_MARK='# <<< snooze <<<'
 
 die() { echo "snooze: $1" >&2; exit 1; }
 now() { echo "${SNOOZE_NOW:-$(date +%s)}"; }
@@ -56,12 +58,20 @@ poke() {
   command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell -q yordanbuilds.snooze refresh >/dev/null 2>&1 || true
 }
 
-current_until() { # empty when nothing is blocked; only ever one line, so a
-                  # hand-duplicated marker cannot turn the epoch into arithmetic
+current_until() { # empty when nothing is blocked. A begin marker only counts as
+                  # a session when an end marker follows it — the rule
+                  # Model.hasEndAfter and the helper both apply — so the orphan
+                  # marker of a truncated block reads as "nothing blocked"
+                  # instead of parking the widget on a countdown Stop cannot
+                  # clear. Only the first block is read, so a hand-duplicated
+                  # marker cannot turn the epoch into arithmetic.
   [[ -r $HOSTS_READ ]] || return 0
-  local found
-  found=$(sed -n 's/^# >>> snooze >>> until=\([0-9][0-9]*\).*/\1/p' "$HOSTS_READ")
-  printf '%s' "${found%%$'\n'*}"
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+    NR == FNR { if (index($0, e) == 1) last_end = FNR; next }
+    index($0, b) == 1 && FNR < last_end {
+      if (match($0, /until=[0-9]+/)) printf "%s", substr($0, RSTART + 6, RLENGTH - 6)
+      exit
+    }' "$HOSTS_READ" "$HOSTS_READ"
 }
 block_domains() {
   [[ -r $HOSTS_READ ]] || return 0
@@ -389,8 +399,10 @@ cmd_uninstall() { # one command, one sudo authorization: everything setup added,
   confirm "Remove Snooze?" || { echo "snooze: left everything in place"; return 0; }
   local purge=n
   # Never let a surprising path turn a "yes" into a wider delete than the user
-  # was asked about.
-  if [[ -n $config_dir && $config_dir != / && $config_dir != "$HOME" ]] \
+  # was asked about. A relative SNOOZE_GROUPS_FILE puts the "directory" at "."
+  # or somewhere else the prompt cannot honestly name, so only an absolute one
+  # — and never / or $HOME itself — is even offered.
+  if [[ $config_dir == /* && $config_dir != / && $config_dir != "$HOME" ]] \
     && confirm "Also delete your groups in $config_dir?"; then purge=y; fi
 
   cancel_timer
@@ -402,11 +414,21 @@ cmd_uninstall() { # one command, one sudo authorization: everything setup added,
   if [[ -L $BIN_DIR/snooze ]]; then rm -f "$BIN_DIR/snooze"; fi
   rm -f "$SESSION_FILE" "$STATE_DIR/.setup-done"
   if [[ $purge == y ]]; then
-    rm -rf "$config_dir"
+    # The consent was about your groups, so take the file — and the directory
+    # only if snooze was the last thing in it. Whatever else lives there was
+    # never ours to delete.
+    rm -f "$USER_GROUPS_FILE"
+    rmdir "$config_dir" 2>/dev/null || true
   else
     echo "snooze: your groups are kept at $USER_GROUPS_FILE"
   fi
 
+  # Everything above is already gone; dying here with a bare 127 would just
+  # leave the user wondering which half ran.
+  if ! command -v omarchy >/dev/null 2>&1; then
+    echo "snooze: omarchy is not on PATH — run: omarchy plugin remove yordanbuilds.snooze yourself"
+    return 0
+  fi
   exec omarchy plugin remove yordanbuilds.snooze --yes
 }
 

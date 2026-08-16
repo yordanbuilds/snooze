@@ -9,8 +9,13 @@
 # %wheel NOPASSWD sudoers rule. It writes 0.0.0.0 entries inside its own
 # markers and nothing else — the worst a caller can do is block a site.
 set -euo pipefail
+# The domain grammar below is ASCII, and a bracket expression is only ASCII in
+# the C locale: under en_US.UTF-8, [a-z] also matches é, so évil.com would pass
+# the check the caller's jq mirror refuses. Pin it, whatever the caller's
+# environment says.
+export LC_ALL=C
 
-VERSION=1
+VERSION=2
 HOSTS=/etc/hosts
 BEGIN='# >>> snooze >>>'
 END='# <<< snooze <<<'
@@ -56,8 +61,18 @@ drop_markers() { # strip_block deliberately keeps a truncated block's orphan
   awk -v b="$BEGIN" -v e="$END" 'index($0, b) == 1 || index($0, e) == 1 { next } { print }'
 }
 
-current_until() {
-  sed -n 's/^# >>> snooze >>> until=\([0-9][0-9]*\).*/\1/p' "$HOSTS"
+current_until() { # empty when nothing is blocked. A begin marker only counts as
+                  # a session when an end marker follows it — the same rule
+                  # strip_block and Model.hasEndAfter apply, so an orphan marker
+                  # is never read as a live block. Only the first block is read:
+                  # a hand-duplicated marker cannot turn the epoch into
+                  # arithmetic downstream.
+  awk -v b="$BEGIN" -v e="$END" '
+    NR == FNR { if (index($0, e) == 1) last_end = FNR; next }
+    index($0, b) == 1 && FNR < last_end {
+      if (match($0, /until=[0-9]+/)) print substr($0, RSTART + 6, RLENGTH - 6)
+      exit
+    }' "$HOSTS" "$HOSTS"
 }
 
 write_hosts() { # full new content on stdin; atomic rename, world-readable
@@ -94,7 +109,11 @@ case $verb in
     flush
     ;;
   unblock)
-    rest=$(strip_block)
+    # drop_markers as well as strip_block: strip_block deliberately keeps a
+    # truncated block's orphan begin marker and everything under it, but
+    # leaving the marker line leaves a phantom session behind — status reads
+    # its until=, and unblock is exactly the command asked to end that.
+    rest=$(strip_block | drop_markers)
     printf '%s\n' "$rest" | write_hosts
     flush
     ;;
@@ -102,7 +121,7 @@ case $verb in
     u=$(current_until)
     [[ -n $u && $u != 0 ]] || exit 0
     (( $(date +%s) >= u )) || exit 0
-    rest=$(strip_block)
+    rest=$(strip_block | drop_markers) # same convergence as unblock
     printf '%s\n' "$rest" | write_hosts
     flush
     ;;
