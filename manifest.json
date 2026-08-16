@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "yordanbuilds.snooze",
+  "name": "Snooze",
+  "version": "1.0.0",
+  "author": "Yordan Yordanov",
+  "license": "MIT",
+  "description": "Snooze distracting sites for a while — hosts-file blocking with a timer, no browser extensions",
+  "kinds": ["bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Snooze",
+    "description": "Block distracting site groups for a set time; they wake up on their own.",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "showRemaining": true },
+    "schema": [
+      { "key": "showRemaining", "type": "boolean", "label": "Show remaining time in bar", "defaultValue": true }
+    ]
+  }
+}
