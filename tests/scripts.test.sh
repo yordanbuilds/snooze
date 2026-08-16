@@ -135,4 +135,22 @@ check "start rejects unknown group" 1 "$SNOOZE" start --group nope --for 1h
 check "start rejects bad duration" 1 "$SNOOZE" start --for soon
 check "extend requires active session" 1 "$SNOOZE" extend 30m
 
+# --- the site expansion must match Model.expandSites, which the widget uses to
+# show what it is about to block: whitespace is trimmed off, and a name longer
+# than 253 characters is skipped rather than failing the whole start.
+long=$(jq -rn '[range(5) | ("a" * 60)] | join(".") + ".com"') # 308 chars, every label legal
+jq -n --arg long "$long" '{version: 1, groups: [
+  { id: "pad", name: "Padded", sites: [" padded.com "] },
+  { id: "long", name: "Long", sites: [$long, "ok.com"] }]}' >"$TMP/groups.json"
+
+hosts
+check "start trims whitespace around sites" 0 "$SNOOZE" start --group pad --for 1h
+grep -q '^0.0.0.0 padded.com$' "$TMP/hosts" || { echo "FAIL: padded site dropped"; fails=$((fails+1)); }
+grep -q '^0.0.0.0 www.padded.com$' "$TMP/hosts" || { echo "FAIL: padded www expansion missing"; fails=$((fails+1)); }
+
+check "start skips an over-long domain" 0 "$SNOOZE" start --group long --for 1h
+grep -q '^0.0.0.0 ok.com$' "$TMP/hosts" || { echo "FAIL: valid sibling not blocked"; fails=$((fails+1)); }
+grep -q "$long" "$TMP/hosts" && { echo "FAIL: over-long domain reached the hosts file"; fails=$((fails+1)); }
+check "stop after expansion checks" 0 "$SNOOZE" stop
+
 echo; [[ $fails -eq 0 ]] && echo "scripts: all ok" || { echo "scripts: $fails failure(s)"; exit 1; }

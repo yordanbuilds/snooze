@@ -51,9 +51,16 @@ block_domains() {
   awk '/^# >>> snooze >>>/{f=1;next} /^# <<< snooze <<</{f=0} f && $1=="0.0.0.0"{print $2}' "$HOSTS_READ"
 }
 
-# Keep in sync with Model.mjs expandSites: normalize, validate, add www. for
-# two-label domains, dedupe. (jq's `unique` also sorts; the order of entries
-# inside the hosts block carries no meaning.)
+# Keep in sync with Model.mjs. The two maps below mirror normalizeSite (trim,
+# lowercase, drop scheme/path/trailing dot) and isValidDomain (253 characters
+# max, then the label shape); the third mirrors expandSites' www. variant for
+# two-label domains. `\s` covers every character JavaScript's trim() eats except
+# the byte-order mark, hence the explicit \x{feff}. A site the model would keep
+# must not be dropped here: the widget lists what it is about to block straight
+# from the model. Skipping an unusable site is per-site for the same reason the
+# model does it — the helper rejects the whole command over one bad name, so a
+# single fat typo in groups.json must not end up blocking nothing at all.
+# (jq's `unique` also sorts; order inside the hosts block means nothing.)
 expand_groups() { # $@ = group ids -> domains on stdout; dies on unknown id
   local ids_json id
   ids_json=$(printf '%s\n' "$@" | jq -Rn '[inputs]')
@@ -63,7 +70,9 @@ expand_groups() { # $@ = group ids -> domains on stdout; dies on unknown id
   done
   jq -r --argjson ids "$ids_json" '
     [.groups[] | select(.id as $i | $ids | index($i)) | .sites[]]
-    | map(ascii_downcase | sub("^[a-z][a-z0-9+.-]*://"; "") | sub("[/:?#].*$"; "") | sub("\\.$"; ""))
+    | map(sub("^[\\s\\x{feff}]+"; "") | sub("[\\s\\x{feff}]+$"; "") | ascii_downcase
+          | sub("^[a-z][a-z0-9+.-]*://"; "") | sub("[/:?#].*$"; "") | sub("\\.$"; ""))
+    | map(select(length <= 253))
     | map(select(test("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")))
     | map(., if (split(".") | length) == 2 then "www." + . else empty end)
     | unique | .[]' "$GROUPS_FILE"
