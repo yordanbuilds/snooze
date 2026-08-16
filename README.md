@@ -110,7 +110,7 @@ snooze status                          what is blocked, and for how long
 snooze status --json                   the same, for scripts
 snooze sweep                           drop the block if its time is up
 snooze setup [--force] [--print]       install the helper and its one sudo rule
-snooze uninstall                       remove the helper, the rule and the link
+snooze uninstall                       remove Snooze and the plugin (asks about your groups)
 ```
 
 Durations look like `30m`, `2h` or `1h30m`. `--group` takes the group's id —
