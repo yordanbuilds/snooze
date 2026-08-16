@@ -2,6 +2,8 @@
 
 **Block the sites that eat your morning — for an hour, or until you say stop.**
 
+![The Snooze panel](shots/idle.png)
+
 A bar widget for [Omarchy](https://omarchy.org). Pick the groups you want out
 of the way, pick a duration, and Snooze writes a marked block of `0.0.0.0`
 entries into `/etc/hosts` — then takes it out again when the time is up. The
@@ -48,31 +50,34 @@ If the update changed the helper, the panel asks you to run setup again.
 
 ## Usage
 
-Click the bar icon. The panel shows one of two things.
+Click the bar icon: groups, a duration, one button. Once a session is running,
+the panel is the countdown.
 
-**Nothing running** — your groups, each with a switch, and the duration to
-snooze them for: 30m, 1h, 2h, 4h, or ∞. Press **Snooze** and the block goes in.
+![A running session](shots/active.png)
 
-**A session running** — the time left, what is blocked, **Stop** behind a
-confirm, and **+30 min** whenever there is a deadline to push. Timed sessions
-end themselves; an ∞ session runs until you stop it. While one runs, the bar
-shows the countdown next to the icon (`󰒲 1h 23m`) — turn that off with the
-widget's _Show remaining time in bar_ setting if you want the glyph alone.
+Timed sessions end themselves; an ∞ session runs until you press **Stop**,
+which is behind a confirm. **+30 min** is there whenever a deadline is.
 
-| Shortcut                    | What happens                              |
-| --------------------------- | ----------------------------------------- |
-| <kbd>←</kbd> / <kbd>→</kbd> | Pick a duration                           |
-| <kbd>Enter</kbd>            | Snooze — or run setup, whichever is up     |
+The time left rides along in the bar:
+
+![Snooze in the bar](shots/bar.png)
+
+Turn that off with the widget's _Show remaining time in bar_ setting.
+
+| Shortcut                    | What happens                                   |
+| --------------------------- | ---------------------------------------------- |
+| <kbd>←</kbd> / <kbd>→</kbd> | Pick a duration                                |
+| <kbd>Enter</kbd>            | Snooze — or run setup, whichever is up         |
 | <kbd>Esc</kbd>              | Back out of the confirm, the editor, the panel |
-| middle-click the bar icon   | Re-read the status now                    |
+| middle-click the bar icon   | Re-read the status now                         |
 
 ### Groups
 
-A group is a name and a list of sites. Three ship by default — Social, Video,
-News — and the pencil in the panel's header edits all of them: add a group,
-rename one, delete one, add or remove sites. A site that isn't a domain is
-refused on the spot, with the field turning red. Everything lands in
-`~/.config/snooze/groups.json`, which is plain JSON you can keep in your
+![Editing a group](shots/edit.png)
+
+Three groups ship by default. The pencil edits all of them — add, rename,
+delete, add or remove sites — and anything that isn't a domain is refused. It
+all lands in `~/.config/snooze/groups.json`, plain JSON you can keep in your
 dotfiles and hand-edit while the panel is open:
 
 ```json
@@ -89,8 +94,8 @@ Sites are bare domains. A two-label domain also blocks its `www.` form, so
 `x.com` covers `www.x.com`; anything deeper is taken as written, which is why
 Video ships `youtube.com`, `m.youtube.com` and `youtu.be` as three entries.
 
-A session is a snapshot: edits made while one is running apply to the next one,
-never to the block already in place.
+A session is a snapshot: edits apply to the next one, never to the block
+already in place.
 
 ### The CLI
 
@@ -114,10 +119,9 @@ name, slugified — and repeats for as many groups as you want; leave it out and
 every group is in.
 
 Nothing needs the shell to be running: `snooze` is a bash script that reads
-`/etc/hosts`, and `snooze status` never escalates at all. When a timed session
-expires, a user timer sweeps the block away; if the machine was asleep or off
-at the deadline, the widget sweeps it on the next shell start, and the panel
-does the same the moment its countdown hits zero.
+`/etc/hosts`, and `status` never escalates at all. A user timer sweeps an
+expired session away — and if the machine was asleep or off at the deadline,
+the widget sweeps it on the next shell start.
 
 ## Known limits
 
@@ -134,8 +138,10 @@ Worth knowing before you trust it with a deadline:
 - **No wildcards.** `/etc/hosts` matches exact names, so `reddit.com` says
   nothing about `old.reddit.com`. The defaults ship the variants that matter;
   add your own in the edit view.
-- **Docker containers inherit the block.** They resolve through the host's stub
-  resolver, so a blocked site is blocked inside them too.
+- **Docker containers inherit the block.** Omarchy points Docker's DNS at the
+  host (`"dns": ["172.17.0.1"]` in `/etc/docker/daemon.json`, answered by
+  systemd-resolved), so container lookups see the same hosts entries. A
+  container started with its own `--dns` does not.
 - **It is bypassable, deliberately.** `snooze stop` is one click, your phone is
   right there, and `/etc/hosts` is a text file. Friction, not a wall.
 
