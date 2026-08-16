@@ -1,0 +1,333 @@
+#!/usr/bin/env bash
+# snooze — block distracting sites for a while. The QML widget shells out to
+# this; it is equally usable from a terminal. Root work is delegated to
+# snooze-helper (see `snooze setup`).
+set -euo pipefail
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+PLUGIN_DIR=$(dirname "$(dirname "$SELF")")
+STATE_DIR=${SNOOZE_STATE_DIR:-$HOME/.local/state/snooze}
+GROUPS_FILE=${SNOOZE_GROUPS_FILE:-$HOME/.config/snooze/groups.json}
+# Until setup copies the defaults into place, read the groups from the plugin.
+[[ -f $GROUPS_FILE ]] || GROUPS_FILE=$PLUGIN_DIR/defaults/groups.json
+SESSION_FILE=$STATE_DIR/session.json
+HOSTS_READ=${SNOOZE_HOSTS_FILE:-/etc/hosts}
+HELPER_BIN=/usr/local/bin/snooze-helper
+BIN_DIR=${SNOOZE_BIN_DIR:-$HOME/.local/bin} # where `snooze setup` links this CLI
+UNIT=snooze-wake
+MAX_DOMAINS=500
+
+die() { echo "snooze: $1" >&2; exit 1; }
+now() { echo "${SNOOZE_NOW:-$(date +%s)}"; }
+
+run_helper() {
+  local verb=$1; shift
+  if [[ -n ${SNOOZE_HELPER:-} ]]; then
+    "$SNOOZE_HELPER" "$verb" --hosts-file "${SNOOZE_HOSTS_FILE:?SNOOZE_HELPER needs SNOOZE_HOSTS_FILE}" "$@"
+  else
+    sudo -n "$HELPER_BIN" "$verb" "$@"
+  fi
+}
+
+# SNOOZE_QUIET=1 (tests) suppresses desktop notifications and shell pokes.
+notify() {
+  [[ ${SNOOZE_QUIET:-} == 1 ]] && return 0
+  command -v omarchy-notification-send >/dev/null 2>&1 && omarchy-notification-send "$1" "$2" || true
+}
+poke() {
+  [[ ${SNOOZE_QUIET:-} == 1 ]] && return 0
+  command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell -q yordanbuilds.snooze refresh >/dev/null 2>&1 || true
+}
+
+current_until() { # empty when nothing is blocked; only ever one line, so a
+                  # hand-duplicated marker cannot turn the epoch into arithmetic
+  [[ -r $HOSTS_READ ]] || return 0
+  local found
+  found=$(sed -n 's/^# >>> snooze >>> until=\([0-9][0-9]*\).*/\1/p' "$HOSTS_READ")
+  printf '%s' "${found%%$'\n'*}"
+}
+block_domains() {
+  [[ -r $HOSTS_READ ]] || return 0
+  awk '/^# >>> snooze >>>/{f=1;next} /^# <<< snooze <<</{f=0} f && $1=="0.0.0.0"{print $2}' "$HOSTS_READ"
+}
+
+# Keep in sync with Model.mjs expandSites: normalize, validate, add www. for
+# two-label domains, dedupe. (jq's `unique` also sorts; the order of entries
+# inside the hosts block carries no meaning.)
+expand_groups() { # $@ = group ids -> domains on stdout; dies on unknown id
+  local ids_json id
+  ids_json=$(printf '%s\n' "$@" | jq -Rn '[inputs]')
+  for id in "$@"; do
+    jq -e --arg id "$id" '.groups[] | select(.id == $id)' "$GROUPS_FILE" >/dev/null \
+      || die "unknown group: $id"
+  done
+  jq -r --argjson ids "$ids_json" '
+    [.groups[] | select(.id as $i | $ids | index($i)) | .sites[]]
+    | map(ascii_downcase | sub("^[a-z][a-z0-9+.-]*://"; "") | sub("[/:?#].*$"; "") | sub("\\.$"; ""))
+    | map(select(test("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")))
+    | map(., if (split(".") | length) == 2 then "www." + . else empty end)
+    | unique | .[]' "$GROUPS_FILE"
+}
+
+group_names() { # JSON array of ids -> "Social, Video"; unknown ids pass through
+  local ids_json=$1
+  if [[ -f $GROUPS_FILE ]]; then
+    jq -r --argjson ids "$ids_json" '
+      . as $root
+      | [$ids[] | . as $i | ([$root.groups[] | select(.id == $i) | .name] | first) // $i]
+      | join(", ")' "$GROUPS_FILE" 2>/dev/null && return 0
+  fi
+  jq -r 'join(", ")' <<<"$ids_json"
+}
+
+parse_duration() { # "30m"|"2h"|"1h30m" -> minutes; keep in sync with Model.mjs
+  local s=$1 h=0 m=0
+  [[ $s =~ ^(([0-9]+)h)?(([0-9]+)m)?$ ]] || return 1
+  h=${BASH_REMATCH[2]:-0}; m=${BASH_REMATCH[4]:-0}
+  local total=$((h * 60 + m))
+  (( total > 0 )) || return 1
+  echo "$total"
+}
+
+fmt_remaining() { # seconds -> "1h 5m" | "45m"; keep in sync with Model.mjs
+  local s=$1 h m
+  if (( s < 0 )); then s=0; fi
+  h=$((s / 3600))
+  m=$(( (s - h * 3600 + 59) / 60 ))
+  if (( m == 60 )); then h=$((h + 1)); m=0; fi
+  if (( h > 0 )); then echo "${h}h ${m}m"; else echo "${m}m"; fi
+}
+
+cancel_timer() {
+  [[ ${SNOOZE_NO_TIMER:-} == 1 ]] && return 0
+  systemctl --user stop "$UNIT.timer" 2>/dev/null || true
+  systemctl --user reset-failed "$UNIT.service" 2>/dev/null || true
+}
+
+schedule_timer() { # minutes until the block expires
+  [[ ${SNOOZE_NO_TIMER:-} == 1 ]] && return 0
+  local minutes=$1
+  if (( minutes < 1 )); then minutes=1; fi
+  cancel_timer
+  # A few seconds of cushion: a sweep that lands a hair before the expiry
+  # second finds a live block, does nothing, and nothing would re-arm it.
+  systemd-run --user --quiet --collect --on-active="$((minutes * 60 + 5))s" --unit="$UNIT" \
+    "$SELF" sweep --notify 2>/dev/null || true
+}
+
+write_session() { # <ids-json> <started> <until>
+  mkdir -p "$STATE_DIR"
+  jq -cn --argjson g "$1" --argjson s "$2" --argjson u "$3" \
+    '{version: 1, groups: $g, startedAt: $s, until: $u}' >"$SESSION_FILE"
+}
+
+cmd_start() {
+  local -a ids=() domains=()
+  local dur=1h forever=0
+  while (( $# )); do
+    case $1 in
+      --group)   [[ -n ${2:-} ]] || die "--group needs a group id"; ids+=("$2"); shift 2 ;;
+      --for)     [[ -n ${2:-} ]] || die "--for needs a duration like 30m or 1h30m"; dur=$2; shift 2 ;;
+      --forever) forever=1; shift ;;
+      *) die "start: unexpected argument: $1" ;;
+    esac
+  done
+
+  local minutes=0
+  if (( forever == 0 )); then
+    minutes=$(parse_duration "$dur") || die "bad duration: $dur (try 30m, 2h, 1h30m)"
+  fi
+
+  if (( ${#ids[@]} == 0 )); then # no --group: everything we know about
+    mapfile -t ids < <(jq -r '.groups[].id' "$GROUPS_FILE")
+  fi
+  (( ${#ids[@]} )) || die "no groups configured in $GROUPS_FILE"
+
+  local -a picked=() # --group twice is the same group once, in the order given
+  local -A seen=()
+  local id
+  for id in "${ids[@]}"; do
+    if [[ -z ${seen[$id]:-} ]]; then seen[$id]=1; picked+=("$id"); fi
+  done
+  ids=("${picked[@]}")
+
+  local expanded
+  expanded=$(expand_groups "${ids[@]}") # dies on an unknown id
+  if [[ -n $expanded ]]; then mapfile -t domains <<<"$expanded"; fi
+  (( ${#domains[@]} )) || die "selected groups have no valid sites"
+  (( ${#domains[@]} <= MAX_DOMAINS )) || die "refusing more than $MAX_DOMAINS domains"
+
+  local ts until_at
+  ts=$(now)
+  if (( forever )); then until_at=0; else until_at=$((ts + minutes * 60)); fi
+
+  run_helper block "$until_at" "${domains[@]}"
+  if (( forever )); then cancel_timer; else schedule_timer "$minutes"; fi
+
+  local ids_json names line
+  ids_json=$(printf '%s\n' "${ids[@]}" | jq -Rn '[inputs]')
+  write_session "$ids_json" "$ts" "$until_at"
+
+  names=$(group_names "$ids_json")
+  if (( forever )); then line="Snoozing $names — until you stop it"
+  else line="Snoozing $names — $(fmt_remaining $((minutes * 60)))"; fi
+  notify "Snooze" "$line"
+  poke
+  echo "$line"
+}
+
+cmd_stop() {
+  (( $# == 0 )) || die "stop: unexpected argument: $1"
+  run_helper unblock
+  cancel_timer
+  rm -f "$SESSION_FILE"
+  notify "Snooze off" "Your sites are awake again"
+  poke
+  echo "Snooze off — your sites are awake again"
+}
+
+cmd_extend() {
+  local dur=${1:-}
+  [[ -n $dur ]] || die "extend needs a duration like 30m"
+  (( $# == 1 )) || die "extend: unexpected argument: $2"
+  local minutes
+  minutes=$(parse_duration "$dur") || die "bad duration: $dur (try 30m, 2h, 1h30m)"
+
+  local u
+  u=$(current_until)
+  [[ -n $u && $u != 0 ]] || die "no timed session to extend"
+
+  local -a domains=()
+  local listed
+  listed=$(block_domains)
+  if [[ -n $listed ]]; then mapfile -t domains <<<"$listed"; fi
+  (( ${#domains[@]} )) || die "the current block has no sites to carry over"
+
+  # Extending a block that already expired starts from now, not from the past.
+  local ts new
+  ts=$(now)
+  if (( u > ts )); then new=$((u + minutes * 60)); else new=$((ts + minutes * 60)); fi
+
+  run_helper block "$new" "${domains[@]}"
+  schedule_timer $(( (new - ts + 59) / 60 ))
+
+  if [[ -f $SESSION_FILE ]]; then
+    local tmp
+    tmp=$(mktemp "$SESSION_FILE.XXXXXX")
+    if jq -c --argjson u "$new" '.until = $u' "$SESSION_FILE" >"$tmp" 2>/dev/null; then
+      mv -f "$tmp" "$SESSION_FILE"
+    else
+      rm -f "$tmp"
+    fi
+  fi
+
+  poke
+  echo "Snoozing — $(fmt_remaining $((new - ts))) left"
+}
+
+cmd_sweep() {
+  local announce=0
+  while (( $# )); do
+    case $1 in
+      --notify) announce=1; shift ;;
+      *) die "sweep: unexpected argument: $1" ;;
+    esac
+  done
+
+  local before after
+  before=$(current_until)
+  run_helper sweep
+  after=$(current_until)
+  if [[ -n $before && -z $after ]]; then # the helper reaped an expired block
+    rm -f "$SESSION_FILE"
+    if (( announce )); then notify "Snooze ended" "Your sites are awake again"; fi
+  fi
+  poke
+}
+
+cmd_status() { # never escalates: reads the hosts file and the session, nothing else
+  local as_json=0
+  while (( $# )); do
+    case $1 in
+      --json) as_json=1; shift ;;
+      *) die "status: unexpected argument: $1" ;;
+    esac
+  done
+
+  local setup=ok
+  if [[ -z ${SNOOZE_HELPER:-} ]]; then
+    if [[ -x $HELPER_BIN && -f $STATE_DIR/.setup-done ]]; then
+      local installed want
+      installed=$("$HELPER_BIN" version 2>/dev/null || echo "")
+      want=$(sed -n 's/^VERSION=//p' "$PLUGIN_DIR/bin/snooze-helper" 2>/dev/null || echo "")
+      if [[ -n $want && $installed != "$want" ]]; then setup=outdated; fi
+    else
+      setup=missing
+    fi
+  fi
+
+  local u enabled=false class=disabled until_out=0 remaining=null
+  u=$(current_until)
+  if [[ -n $u ]]; then
+    enabled=true
+    class=enabled
+    until_out=$u
+    if [[ $u != 0 ]]; then
+      local left=$((u - $(now)))
+      if (( left < 0 )); then left=0; fi
+      remaining=$left
+    fi
+  fi
+
+  # A session file that was truncated or hand-edited must not break the widget:
+  # anything but an array of ids reads as "no groups".
+  local groups_json names tooltip
+  groups_json=$(jq -c 'if (.groups | type) == "array" then [.groups[] | tostring] else [] end' \
+    "$SESSION_FILE" 2>/dev/null || echo '[]')
+  [[ -n $groups_json ]] || groups_json='[]'
+  names=$(group_names "$groups_json")
+  [[ -n $names ]] || names="sites"
+  if [[ $enabled == false ]]; then tooltip="Snooze — nothing blocked"
+  elif [[ $until_out == 0 ]]; then tooltip="Snoozing $names — until you stop it"
+  else tooltip="Snoozing $names — $(fmt_remaining "$remaining") left"; fi
+
+  if (( as_json )); then
+    jq -cn --arg setup "$setup" --argjson enabled "$enabled" --argjson until "$until_out" \
+      --argjson remaining "$remaining" --argjson groups "$groups_json" \
+      --arg class "$class" --arg tooltip "$tooltip" \
+      '{setup: $setup, enabled: $enabled, until: $until, remaining: $remaining,
+        groups: $groups, class: $class, tooltip: $tooltip}'
+  else
+    local line=$tooltip
+    if [[ $setup != ok ]]; then line="$line (helper $setup — run: snooze setup)"; fi
+    echo "$line"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+snooze — block distracting sites for a while
+
+  snooze start [--group <id>]... [--for <dur>] [--forever]
+                          block the named groups (default: all) for <dur>
+                          (default: 1h). --forever blocks until you stop it.
+  snooze extend <dur>     push the current block further out
+  snooze stop             unblock everything now
+  snooze sweep [--notify] drop the block if its time is up
+  snooze status [--json]  what is blocked, and for how long
+
+Durations look like 30m, 2h or 1h30m. Groups live in ~/.config/snooze/groups.json.
+EOF
+}
+
+verb=${1:-status}
+if (( $# )); then shift; fi
+case $verb in
+  start)  cmd_start "$@" ;;
+  stop)   cmd_stop "$@" ;;
+  extend) cmd_extend "$@" ;;
+  sweep)  cmd_sweep "$@" ;;
+  status) cmd_status "$@" ;;
+  help|-h|--help) usage ;;
+  *) die "unknown command: $verb (try: snooze help)" ;;
+esac

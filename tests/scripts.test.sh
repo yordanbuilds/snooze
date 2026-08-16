@@ -88,4 +88,51 @@ if unshare -r true 2>/dev/null; then
   check "refuses --hosts-file as root" 1 unshare -r "$HELPER" unblock --hosts-file "$TMP/hosts"
 fi
 
+# ---------- CLI ----------
+SNOOZE="$HERE/bin/snooze"
+export SNOOZE_HELPER="$HELPER" SNOOZE_HOSTS_FILE="$TMP/hosts" \
+       SNOOZE_STATE_DIR="$TMP/state" SNOOZE_GROUPS_FILE="$TMP/groups.json" \
+       SNOOZE_BIN_DIR="$TMP/bin" SNOOZE_NO_TIMER=1 SNOOZE_QUIET=1
+mkdir -p "$TMP/state" "$TMP/bin"
+cp "$HERE/defaults/groups.json" "$TMP/groups.json"
+
+hosts
+check "start blocks selected groups" 0 "$SNOOZE" start --group social --for 2h
+grep -q '^0.0.0.0 facebook.com$' "$TMP/hosts" || { echo "FAIL: social not blocked"; fails=$((fails+1)); }
+grep -q '^0.0.0.0 www.reddit.com$' "$TMP/hosts" || { echo "FAIL: www expansion missing"; fails=$((fails+1)); }
+grep -q 'youtube' "$TMP/hosts" && { echo "FAIL: unselected group blocked"; fails=$((fails+1)); }
+u=$(sed -n 's/.*until=\([0-9]*\).*/\1/p' "$TMP/hosts")
+now=$(date +%s)
+[[ $u -gt $((now + 7100)) && $u -lt $((now + 7300)) ]] || { echo "FAIL: until not ~2h out ($u)"; fails=$((fails+1)); }
+jq -e '.groups == ["social"]' "$TMP/state/session.json" >/dev/null || { echo "FAIL: session groups"; fails=$((fails+1)); }
+
+check "status json while active" 0 "$SNOOZE" status --json
+jq -e '.enabled == true and .groups == ["social"] and .setup == "ok" and .remaining > 7000' "$TMP/out" >/dev/null \
+  || { echo "FAIL: status shape: $(cat "$TMP/out")"; fails=$((fails+1)); }
+
+check "extend adds 30m" 0 "$SNOOZE" extend 30m
+u2=$(sed -n 's/.*until=\([0-9]*\).*/\1/p' "$TMP/hosts")
+[[ $u2 -eq $((u + 1800)) ]] || { echo "FAIL: extend ($u -> $u2)"; fails=$((fails+1)); }
+grep -q '^0.0.0.0 facebook.com$' "$TMP/hosts" || { echo "FAIL: extend lost domains"; fails=$((fails+1)); }
+
+check "stop unblocks" 0 "$SNOOZE" stop
+grep -q 'snooze' "$TMP/hosts" && { echo "FAIL: block left after stop"; fails=$((fails+1)); }
+[[ -f "$TMP/state/session.json" ]] && { echo "FAIL: session left after stop"; fails=$((fails+1)); }
+check "status json idle" 0 "$SNOOZE" status --json
+jq -e '.enabled == false and .class == "disabled"' "$TMP/out" >/dev/null || { echo "FAIL: idle status"; fails=$((fails+1)); }
+
+check "start forever" 0 "$SNOOZE" start --forever
+grep -q 'until=0' "$TMP/hosts" || { echo "FAIL: forever until"; fails=$((fails+1)); }
+check "status forever remaining null" 0 "$SNOOZE" status --json
+jq -e '.until == 0 and .remaining == null and .enabled == true' "$TMP/out" >/dev/null || { echo "FAIL: forever status"; fails=$((fails+1)); }
+check "stop forever" 0 "$SNOOZE" stop
+
+check "sweep clears expired and session" 0 env SNOOZE_NOW=2000000000 bash -c '
+  "$0" start --group video --for 1m && sleep 0 && '"$HELPER"' block --hosts-file "$SNOOZE_HOSTS_FILE" 1000 x.com && "$0" sweep' "$SNOOZE"
+grep -q 'snooze' "$TMP/hosts" && { echo "FAIL: sweep left expired block"; fails=$((fails+1)); }
+
+check "start rejects unknown group" 1 "$SNOOZE" start --group nope --for 1h
+check "start rejects bad duration" 1 "$SNOOZE" start --for soon
+check "extend requires active session" 1 "$SNOOZE" extend 30m
+
 echo; [[ $fails -eq 0 ]] && echo "scripts: all ok" || { echo "scripts: $fails failure(s)"; exit 1; }
