@@ -43,9 +43,16 @@ Item {
   property var viewGroups: []
   onSignatureChanged: root.viewGroups = root.groups
 
-  // Add-site drafts and their error flags, keyed by group id, so the rebuilds
-  // that do happen (a real edit, a hand-edit of the file) leave typing alone.
-  // Read once, when a delegate is created; never bound to.
+  // Unsaved typing, keyed by group id, so the rebuilds that do happen (a real
+  // edit here, a hand-edit of the file) leave it alone. Read once, when a
+  // delegate is created; never bound to.
+  //
+  // Renames need this as much as new sites do: removing a site or deleting
+  // another group commits through buttons that never take the keyboard, so a
+  // half-typed name is still under the caret when its delegate is replaced.
+  // A name draft only exists while it differs from the file, so a rename that
+  // lands — or is reverted — drops it on the next keystroke it causes.
+  property var nameDrafts: ({})
   property var siteDrafts: ({})
   property var siteErrors: ({})
 
@@ -64,6 +71,25 @@ Item {
   Component.onCompleted: root.viewGroups = root.groups
 
   // ---- per-field state -----------------------------------------------------
+
+  // null, not "", when there is nothing typed: a name the user emptied on
+  // purpose is a draft too, and must not be read back as "use the file's name".
+  function nameDraftFor(id) {
+    var v = root.nameDrafts[id]
+    return v === undefined ? null : String(v)
+  }
+
+  // Only a name that differs from the file is worth keeping. Storing every
+  // keystroke would leave a stale copy of the old name behind, and that copy
+  // would then overwrite a rename made outside the panel.
+  function setNameDraft(id, value, saved) {
+    if (String(value) === String(saved)) root.clearNameDraft(id)
+    else root.nameDrafts[id] = String(value)
+  }
+
+  function clearNameDraft(id) {
+    delete root.nameDrafts[id]
+  }
 
   function draftFor(id) {
     var v = root.siteDrafts[id]
@@ -101,6 +127,7 @@ Item {
   // half-typed site, no error border, no focus claim carries into the next visit.
   function reset() {
     root.pendingDeleteId = ""
+    root.nameDrafts = ({})
     root.siteDrafts = ({})
     root.siteErrors = ({})
     root.focusKey = ""
@@ -306,12 +333,18 @@ Item {
           TextField {
             id: nameField
             width: parent.width - deleteButton.width - parent.spacing
-            text: groupSection.groupName
             foreground: root.foreground
             font.family: root.fontFamily
             onActiveFocusChanged: root.noteFocus(nameField, "name:" + groupSection.groupId, activeFocus)
-            Component.onCompleted: if (root.focusKey === "name:" + groupSection.groupId) nameField.forceActiveFocus()
+            // Whatever was typed and not yet saved comes back with the delegate;
+            // otherwise the field shows what the file holds.
+            Component.onCompleted: {
+              var draft = root.nameDraftFor(groupSection.groupId)
+              nameField.text = draft === null ? groupSection.groupName : draft
+              if (root.focusKey === "name:" + groupSection.groupId) nameField.forceActiveFocus()
+            }
             Component.onDestruction: root.noteFocus(nameField, "", false)
+            onTextChanged: root.setNameDraft(groupSection.groupId, nameField.text, groupSection.groupName)
             // Renaming to nothing is not a rename: the field goes back to the
             // name the file still holds.
             onEditingFinished: {
@@ -321,6 +354,9 @@ Item {
                 return
               }
               var id = groupSection.groupId
+              // The typed text is on its way to the file, so it stops being a
+              // draft here — otherwise the trimming would read back as one.
+              root.clearNameDraft(id)
               Qt.callLater(function() { root.renameGroup(id, wanted) })
             }
             Keys.onPressed: function(event) {
