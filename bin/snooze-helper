@@ -35,13 +35,25 @@ elif (( EUID != 0 )); then
   die "must run as root (tests pass --hosts-file)"
 fi
 
-strip_block() { # reads $HOSTS twice: pass 1 looks for the end marker; a block
-                # with no END must be left in place, never swallowed below
+strip_block() { # reads $HOSTS twice: pass 1 records the last end marker; a begin
+                # marker only opens a block when an end marker follows it below,
+                # so a truncated block is left in place, never swallowed. Mirrors
+                # hasEndAfter() in Model.mjs — an end marker sitting *above* the
+                # begin marker must not re-arm the swallow either.
   awk -v b="$BEGIN" -v e="$END" '
-    NR == FNR { if (index($0, e) == 1) has_end = 1; next }
-    index($0, b) == 1 && has_end { skip = 1; next }
+    NR == FNR { if (index($0, e) == 1) last_end = FNR; next }
+    index($0, b) == 1 && FNR < last_end { skip = 1; next }
     index($0, e) == 1 { skip = 0; next }
     !skip { print }' "$HOSTS" "$HOSTS"
+}
+
+drop_markers() { # strip_block deliberately keeps a truncated block's orphan
+                 # begin marker and the lines under it. Before writing a fresh
+                 # block, drop the marker lines themselves: an orphan begin left
+                 # above the new block would be terminated by the new end marker,
+                 # and the next strip would swallow everything between the two.
+                 # Mirrors applyBlock() in Model.mjs.
+  awk -v b="$BEGIN" -v e="$END" 'index($0, b) == 1 || index($0, e) == 1 { next } { print }'
 }
 
 current_until() {
@@ -72,7 +84,7 @@ case $verb in
     for d in "$@"; do
       [[ ${#d} -le 253 && $d =~ $DOMAIN_RE ]] || die "invalid domain: $d"
     done
-    rest=$(strip_block) # $() trims trailing newlines — no blank-line growth
+    rest=$(strip_block | drop_markers) # $() trims trailing newlines — no blank-line growth
     {
       printf '%s\n\n' "$rest"
       echo "$BEGIN until=$until_at"

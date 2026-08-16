@@ -60,7 +60,29 @@ check "unblock leaves unterminated block alone" 0 "$HELPER" unblock --hosts-file
 grep -q '^10.0.0.5 intranet$' "$TMP/hosts" || { echo "FAIL: content below unterminated marker lost"; fails=$((fails+1)); }
 grep -q '>>> snooze' "$TMP/hosts" || { echo "FAIL: unterminated marker must stay as ordinary content"; fails=$((fails+1)); }
 
+# --- a stray end marker above a truncated block must not re-arm the swallow
+# (same case as Model.parseHosts guards in tests/model.test.mjs)
+printf '# <<< snooze <<<\n127.0.0.1 localhost\n# >>> snooze >>> until=5\n10.0.0.5 intranet\n' >"$TMP/hosts"
+check "stray end marker above an unterminated block" 0 "$HELPER" unblock --hosts-file "$TMP/hosts"
+grep -q '^10.0.0.5 intranet$' "$TMP/hosts" || { echo "FAIL: stray end marker swallowed content below"; fails=$((fails+1)); }
+
+# --- the next write repairs a truncated block instead of arming it: an orphan
+# begin marker left above the fresh block would be re-terminated by the fresh
+# end marker, and the write after that would swallow everything between.
+printf '127.0.0.1 localhost\n# >>> snooze >>> until=5\n10.0.0.5 intranet\n' >"$TMP/hosts"
+check "block repairs a truncated marker" 0 "$HELPER" block --hosts-file "$TMP/hosts" 0 x.com
+[[ $(grep -c '>>> snooze' "$TMP/hosts") -eq 1 ]] || { echo "FAIL: orphan begin marker survived the write"; fails=$((fails+1)); }
+check "unblock after repair" 0 "$HELPER" unblock --hosts-file "$TMP/hosts"
+grep -q '^10.0.0.5 intranet$' "$TMP/hosts" || { echo "FAIL: repaired file still swallowed content"; fails=$((fails+1)); }
+
 check "version" 0 "$HELPER" version
 check "refuses real hosts as non-root" 1 "$HELPER" unblock
+
+# The root guard: `unshare -r` gives EUID 0 in a user namespace with no
+# privilege at all. The guard fires before $HOSTS is reassigned, so this can
+# never reach a file — it just proves sudo's path cannot be aimed elsewhere.
+if unshare -r true 2>/dev/null; then
+  check "refuses --hosts-file as root" 1 unshare -r "$HELPER" unblock --hosts-file "$TMP/hosts"
+fi
 
 echo; [[ $fails -eq 0 ]] && echo "scripts: all ok" || { echo "scripts: $fails failure(s)"; exit 1; }
