@@ -149,13 +149,16 @@ Worth knowing before you trust it with a deadline:
 
 ```bash
 snooze uninstall
-omarchy plugin remove yordanbuilds.snooze
 ```
 
-`snooze uninstall` unblocks anything still blocked, then removes the helper,
-`/etc/sudoers.d/snooze`, the `~/.local/bin/snooze` link and the session state,
-with one sudo prompt. Your `~/.config/snooze/groups.json` stays — it is yours,
-and it will be waiting if you come back.
+One command for all of it. It prints what it is about to remove and asks first:
+anything still blocked is unblocked, then the helper, `/etc/sudoers.d/snooze`,
+the `~/.local/bin/snooze` link and the session state go, and the plugin itself
+is handed to `omarchy plugin remove`. One sudo prompt covers the privileged
+half.
+
+Your groups are a separate question, asked separately. Answer no and
+`~/.config/snooze/` stays exactly where it is, waiting for you to come back.
 
 ## License
 
