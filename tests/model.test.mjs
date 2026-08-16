@@ -126,6 +126,30 @@ test("parseHosts keeps lines that follow the block and reads until=0", () => {
   assert.ok(!parsed.rest.includes("snooze"));
 });
 
+test("unterminated block never swallows content below it", () => {
+  const broken = "127.0.0.1 localhost\n# >>> snooze >>> until=5\n0.0.0.0 x.com\n10.0.0.5 intranet\n";
+  const parsed = Model.parseHosts(broken);
+  assert.equal(parsed.until, null);
+  assert.ok(parsed.rest.includes("10.0.0.5 intranet"));
+  assert.ok(parsed.rest.includes("# >>> snooze >>>"));
+});
+
+test("an unterminated block is repaired, not deleted, on the next write", () => {
+  const broken = "127.0.0.1 localhost\n# >>> snooze >>> until=5\n0.0.0.0 x.com\n10.0.0.5 intranet\n";
+  const fixed = Model.applyBlock(broken, 42, ["y.com"]);
+  assert.ok(fixed.includes("10.0.0.5 intranet"));
+  const reparsed = Model.parseHosts(fixed);
+  assert.equal(reparsed.until, 42);
+  assert.deepEqual(reparsed.domains, ["y.com"]);
+});
+
+test("a stray end marker above the block does not re-arm the swallow", () => {
+  const broken = "# <<< snooze <<<\n127.0.0.1 localhost\n# >>> snooze >>> until=5\n10.0.0.5 intranet\n";
+  const parsed = Model.parseHosts(broken);
+  assert.equal(parsed.until, null);
+  assert.ok(parsed.rest.includes("10.0.0.5 intranet"));
+});
+
 test("validateGroups", async () => {
   const fs = await import("node:fs");
   const defaults = JSON.parse(fs.readFileSync(new URL("../defaults/groups.json", import.meta.url)));

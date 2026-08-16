@@ -41,6 +41,14 @@ Item {
     check(Model.parseHosts(again).domains.length === 1, "re-apply replaces the domains")
     check(Model.parseHosts("127.0.0.1 localhost\n").until === null, "no block means until null")
 
+    const broken = "127.0.0.1 localhost\n# >>> snooze >>> until=5\n0.0.0.0 x.com\n10.0.0.5 intranet\n"
+    const brokenParsed = Model.parseHosts(broken)
+    check(brokenParsed.until === null, "unterminated block is not a block")
+    check(brokenParsed.rest.includes("10.0.0.5 intranet"), "unterminated block keeps content below it")
+    const repaired = Model.applyBlock(broken, 42, ["y.com"])
+    check(repaired.includes("10.0.0.5 intranet"), "repair keeps foreign content")
+    check(Model.parseHosts(repaired).domains.join(",") === "y.com", "repair leaves one clean block")
+
     check(Model.validateGroups({ version: 1, groups: [{ id: "a", name: "A", sites: ["x.com"] }] }),
           "validateGroups accepts a well-formed file")
     check(!Model.validateGroups({ version: 1, groups: [{ id: "a" }] }),

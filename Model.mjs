@@ -60,6 +60,18 @@ export function buildBlock(until, domains) {
   return lines.join("\n");
 }
 
+// A begin marker only opens a block when an end marker actually follows it.
+// Without this, a file whose end marker was hand-deleted or truncated away
+// would put the parser in block mode forever, and every line below the marker
+// would vanish from `rest` — the next applyBlock would then write /etc/hosts
+// with that content silently deleted.
+function hasEndAfter(lines, from) {
+  for (var i = from; i < lines.length; i++) {
+    if (lines[i].indexOf(END_MARK) === 0) return true;
+  }
+  return false;
+}
+
 export function parseHosts(text) {
   var lines = String(text).split("\n");
   var rest = [];
@@ -68,7 +80,7 @@ export function parseHosts(text) {
   var inside = false;
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
-    if (line.indexOf(BEGIN_MARK) === 0) {
+    if (line.indexOf(BEGIN_MARK) === 0 && hasEndAfter(lines, i + 1)) {
       inside = true;
       var m = /until=(\d+)/.exec(line);
       until = m ? parseInt(m[1], 10) : 0;
@@ -86,7 +98,17 @@ export function parseHosts(text) {
 }
 
 export function applyBlock(text, until, domains) {
-  var base = parseHosts(text).rest.replace(/\s+$/, "");
+  // parseHosts leaves an orphan marker from a truncated block in `rest` rather
+  // than deleting the lines under it. Strip those markers before writing: they
+  // are snooze's own text, and leaving one above the fresh block would give it
+  // an end marker again, so the next parse would swallow everything between.
+  var lines = parseHosts(text).rest.split("\n");
+  var kept = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf(BEGIN_MARK) === 0 || lines[i].indexOf(END_MARK) === 0) continue;
+    kept.push(lines[i]);
+  }
+  var base = kept.join("\n").replace(/\s+$/, "");
   return base + "\n\n" + buildBlock(until, domains) + "\n";
 }
 
