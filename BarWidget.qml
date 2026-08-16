@@ -39,6 +39,10 @@ Panel {
   // Minutes for the next session; 0 is the CLI's "until I stop it".
   property int durationMinutes: 60
   property bool stopConfirmOpen: false
+  // The edit view takes the place of the idle and active views. It is reachable
+  // from both: a session is a snapshot, so edits land on the next one.
+  property bool editing: false
+  readonly property bool deleteConfirmOpen: editView.pendingDeleteId !== ""
   // Last failure from the CLI, shown for a few seconds under the hero.
   property string actionMessage: ""
 
@@ -71,11 +75,20 @@ Panel {
 
   onOpenedChanged: {
     if (!opened) {
-      // Never leave a confirm hanging over a panel nobody is looking at.
+      // Never leave a confirm hanging over a panel nobody is looking at, and
+      // open the next time on the view the panel is actually about.
       root.stopConfirmOpen = false
+      root.editing = false
       return
     }
     service.refresh()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  // Whichever way the edit view is entered or left, it starts clean and the
+  // keyboard goes back to the panel — a text field must not keep it.
+  onEditingChanged: {
+    editView.reset()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -138,6 +151,9 @@ Panel {
   // between "+30 min" and "Stop" there is no obvious answer, and Stop is behind
   // a confirm on purpose.
   function activatePrimary() {
+    // The edit view is all typing and small buttons; there is nothing here for
+    // Enter to mean, and starting a session from it would be a surprise.
+    if (root.editing) return
     if (root.showSetup) { root.runSetup(); return }
     if (root.showIdle && root.selectedIds.length > 0) service.start(root.selectedIds, root.durationMinutes)
   }
@@ -233,10 +249,17 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // A focused text field owns every key, including the ones this catcher
+      // would otherwise read as commands ("j", "x", Space).
+      blocked: root.editing && editView.editorFocused
       // The confirm is modal for the keyboard as well as the mouse: while it is
       // up every key it understands is answered by it, not by the panel.
       onCloseRequested: {
         if (root.stopConfirmOpen) stopConfirm.canceled()
+        else if (root.deleteConfirmOpen) deleteConfirm.canceled()
+        // Escape backs out of editing before it closes the panel — the same
+        // step the hero's back button takes.
+        else if (root.editing) root.editing = false
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -245,12 +268,21 @@ Panel {
           if (dx !== 0) stopConfirm.selectedIndex = stopConfirm.selectedIndex === 0 ? 1 : 0
           return
         }
-        if (dx !== 0 && root.showIdle) root.stepDuration(dx)
+        if (root.deleteConfirmOpen) {
+          if (dx !== 0) deleteConfirm.selectedIndex = deleteConfirm.selectedIndex === 0 ? 1 : 0
+          return
+        }
+        if (dx !== 0 && root.showIdle && !root.editing) root.stepDuration(dx)
       }
       onActivateRequested: {
         if (root.stopConfirmOpen) {
           if (stopConfirm.selectedIndex === 0) stopConfirm.canceled()
           else stopConfirm.confirmed()
+          return
+        }
+        if (root.deleteConfirmOpen) {
+          if (deleteConfirm.selectedIndex === 0) deleteConfirm.canceled()
+          else deleteConfirm.confirmed()
           return
         }
         root.activatePrimary()
@@ -272,11 +304,37 @@ Panel {
           width: panelFlick.width
           spacing: Style.space(12)
 
-          PanelHero {
-            title: "Snooze"
-            meta: root.stateLine
-            foreground: root.foreground
-            fontFamily: root.fontFamily
+          // The hero's trailing control resolves `root` to PanelHero, not to
+          // this panel, so the edit toggle reaches panel state through `header`.
+          Item {
+            id: header
+            width: parent.width
+            implicitHeight: hero.implicitHeight
+
+            readonly property bool editing: root.editing
+            // Nothing to edit before setup has written a groups file.
+            readonly property bool canEdit: !root.showSetup
+
+            function toggleEditing() { root.editing = !root.editing }
+
+            PanelHero {
+              id: hero
+              title: "Snooze"
+              meta: root.stateLine
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+
+              trailingControl: Component {
+                PanelActionButton {
+                  visible: header.canEdit
+                  iconText: header.editing ? "󰌍" : "󰏫"
+                  tooltipText: header.editing ? "Back" : "Edit groups and sites"
+                  foreground: hero.foreground
+                  fontFamily: hero.fontFamily
+                  onClicked: header.toggleEditing()
+                }
+              }
+            }
           }
 
           // Whatever the CLI said when a verb failed, wherever it was raised —
@@ -320,7 +378,7 @@ Panel {
           // ---- idle view ---------------------------------------------------
 
           Column {
-            visible: root.showIdle
+            visible: root.showIdle && !root.editing
             width: parent.width
             spacing: Style.space(8)
 
@@ -424,7 +482,7 @@ Panel {
           // ---- active view -------------------------------------------------
 
           Column {
-            visible: root.showActive
+            visible: root.showActive && !root.editing
             width: parent.width
             spacing: Style.space(10)
 
@@ -491,6 +549,21 @@ Panel {
               wrapMode: Text.WordWrap
             }
           }
+
+          // ---- edit view ---------------------------------------------------
+
+          EditView {
+            id: editView
+            visible: root.editing && !root.showSetup
+            width: parent.width
+            service: service
+            foreground: root.foreground
+            urgent: root.urgent
+            fontFamily: root.fontFamily
+            // Escape out of a field gives the keyboard back to the panel, so
+            // the next Escape can leave the view.
+            onEscaped: keyCatcher.forceActiveFocus()
+          }
         }
       }
 
@@ -510,6 +583,23 @@ Panel {
           root.stopConfirmOpen = false
           service.stop()
         }
+      }
+
+      // Deleting a group takes its sites with it, and the file is the only copy
+      // — so it asks. The dialog lives here rather than in the edit view so it
+      // covers the whole panel, however far down the list the group sits.
+      ConfirmDialog {
+        id: deleteConfirm
+        anchors.fill: parent
+        z: 10
+        opened: root.deleteConfirmOpen
+        message: "Delete group and its sites?"
+        confirmText: "Delete"
+        background: Color.popups.background
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onCanceled: editView.cancelDelete()
+        onConfirmed: editView.confirmDelete()
       }
     }
   }
