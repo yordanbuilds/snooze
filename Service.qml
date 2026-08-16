@@ -43,8 +43,14 @@ Item {
   property bool _expired: false
   property var _actionQueue: []
   property var _pendingGroups: null
+  property bool _groupsDirEnsured: false
 
   function refresh() {
+    // Setup writes groups.json while this widget is already running, and the
+    // CLI pokes `refresh` the moment it finishes. A FileView only notices a
+    // file appearing inside a directory that existed when it started watching,
+    // so re-read here for as long as there is nothing to show.
+    if (root.groupsDoc === null) groupsFile.reload()
     // A running Process ignores a new command, so a poll that lands mid-probe
     // would be dropped silently. Remember it and run it on the way out.
     if (statusProc.running) {
@@ -171,6 +177,17 @@ Item {
     groupsFile.setText(JSON.stringify(doc, null, 2) + "\n")
   }
 
+  // ~/.config/snooze does not exist until `snooze setup` runs, and a watch on a
+  // file whose parent directory is missing never fires: when the directory and
+  // the file arrive together, nothing is reported. Create the directory once,
+  // so the only path left is the one that does report — a file appearing in a
+  // directory that was already there.
+  function ensureGroupsDir() {
+    if (root._groupsDirEnsured || groupsDirProc.running) return
+    root._groupsDirEnsured = true
+    groupsDirProc.running = true
+  }
+
   function openSetupTerminal() {
     Quickshell.execDetached(["omarchy-launch-floating-terminal-with-presentation", root.cliPath + " setup"])
   }
@@ -222,15 +239,21 @@ Item {
     id: groupsSaveTimer
     interval: 200
     repeat: false
-    // ~/.config/snooze may not exist yet (nothing has run `snooze setup`), and
-    // a write into a missing directory just fails.
+    // ~/.config/snooze may still be missing, and a write into a directory that
+    // is not there just fails. A mkdir already in flight flushes the pending
+    // write itself when it exits.
     onTriggered: if (!groupsDirProc.running) groupsDirProc.running = true
   }
 
   Process {
     id: groupsDirProc
     command: ["mkdir", "-p", root.groupsDir]
-    onExited: root.flushGroups()
+    onExited: {
+      root.flushGroups()
+      // The directory may have only just come into being; re-read so the watch
+      // is armed on it rather than on nothing.
+      if (root.groupsDoc === null) groupsFile.reload()
+    }
   }
 
   Process {
@@ -279,8 +302,12 @@ Item {
     printErrors: false
     onLoaded: root.applyGroups(text())
     // No file yet, or an unreadable one: the panel offers setup instead of an
-    // empty group list.
-    onLoadFailed: root.groupsDoc = null
+    // empty group list. Nothing to read is also the moment to make sure the
+    // directory exists, so the file setup is about to write gets noticed.
+    onLoadFailed: {
+      root.groupsDoc = null
+      root.ensureGroupsDir()
+    }
     onFileChanged: reload()
     onSaveFailed: root.actionFailed("Could not save " + root.groupsPath)
   }
