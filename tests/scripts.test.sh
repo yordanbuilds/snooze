@@ -76,7 +76,10 @@ check "unblock after repair" 0 "$HELPER" unblock --hosts-file "$TMP/hosts"
 grep -q '^10.0.0.5 intranet$' "$TMP/hosts" || { echo "FAIL: repaired file still swallowed content"; fails=$((fails+1)); }
 
 check "version" 0 "$HELPER" version
-check "refuses real hosts as non-root" 1 "$HELPER" unblock
+
+if (( EUID != 0 )); then # as root this line would rewrite the real /etc/hosts
+  check "refuses real hosts as non-root" 1 "$HELPER" unblock
+fi
 
 # The root guard: `unshare -r` gives EUID 0 in a user namespace with no
 # privilege at all. The guard fires before $HOSTS is reassigned, so this can
