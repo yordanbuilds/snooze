@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# snooze-helper — the only writer of Snooze's managed block in /etc/hosts.
+# Verbs:
+#   block <until-epoch|0> <domain>...   write the block (0 = indefinite)
+#   unblock                             remove the block
+#   sweep                               remove the block only if it expired
+#   version                             print helper version (no root needed)
+# Installed root-owned to /usr/local/bin by `snooze setup`, with a narrow
+# %wheel NOPASSWD sudoers rule. It writes 0.0.0.0 entries inside its own
+# markers and nothing else — the worst a caller can do is block a site.
+set -euo pipefail
+
+VERSION=1
+HOSTS=/etc/hosts
+BEGIN='# >>> snooze >>>'
+END='# <<< snooze <<<'
+MAX_DOMAINS=500
+DOMAIN_RE='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+
+die() { echo "snooze-helper: $1" >&2; exit 1; }
+
+verb=${1:-}
+[[ -n $verb ]] || die "usage: snooze-helper block|unblock|sweep|version"
+shift
+[[ $verb == version ]] && { echo "$VERSION"; exit 0; }
+
+# Test seam: redirect writes to a scratch file. Refused as root, so the
+# passwordless sudo path can only ever operate on the real /etc/hosts.
+if [[ ${1:-} == --hosts-file ]]; then
+  (( EUID != 0 )) || die "--hosts-file is refused as root"
+  [[ -n ${2:-} ]] || die "--hosts-file needs a path"
+  HOSTS=$2
+  shift 2
+elif (( EUID != 0 )); then
+  die "must run as root (tests pass --hosts-file)"
+fi
+
+strip_block() { # reads $HOSTS twice: pass 1 looks for the end marker; a block
+                # with no END must be left in place, never swallowed below
+  awk -v b="$BEGIN" -v e="$END" '
+    NR == FNR { if (index($0, e) == 1) has_end = 1; next }
+    index($0, b) == 1 && has_end { skip = 1; next }
+    index($0, e) == 1 { skip = 0; next }
+    !skip { print }' "$HOSTS" "$HOSTS"
+}
+
+current_until() {
+  sed -n 's/^# >>> snooze >>> until=\([0-9][0-9]*\).*/\1/p' "$HOSTS"
+}
+
+write_hosts() { # full new content on stdin; atomic rename, world-readable
+  local tmp
+  tmp=$(mktemp "$HOSTS.snooze.XXXXXX")
+  cat >"$tmp"
+  chmod 644 "$tmp"
+  (( EUID != 0 )) || chown root:root "$tmp"
+  mv -f "$tmp" "$HOSTS"
+}
+
+flush() {
+  [[ $HOSTS == /etc/hosts ]] || return 0
+  resolvectl flush-caches 2>/dev/null || true
+}
+
+case $verb in
+  block)
+    (( $# >= 2 )) || die "block needs <until> and at least one domain"
+    until_at=$1
+    shift
+    [[ $until_at =~ ^[0-9]+$ ]] || die "until must be an epoch integer, or 0 for indefinite"
+    (( $# <= MAX_DOMAINS )) || die "refusing more than $MAX_DOMAINS domains"
+    for d in "$@"; do
+      [[ ${#d} -le 253 && $d =~ $DOMAIN_RE ]] || die "invalid domain: $d"
+    done
+    rest=$(strip_block) # $() trims trailing newlines — no blank-line growth
+    {
+      printf '%s\n\n' "$rest"
+      echo "$BEGIN until=$until_at"
+      for d in "$@"; do echo "0.0.0.0 $d"; done
+      echo "$END"
+    } | write_hosts
+    flush
+    ;;
+  unblock)
+    rest=$(strip_block)
+    printf '%s\n' "$rest" | write_hosts
+    flush
+    ;;
+  sweep)
+    u=$(current_until)
+    [[ -n $u && $u != 0 ]] || exit 0
+    (( $(date +%s) >= u )) || exit 0
+    rest=$(strip_block)
+    printf '%s\n' "$rest" | write_hosts
+    flush
+    ;;
+  *) die "unknown verb: $verb" ;;
+esac
