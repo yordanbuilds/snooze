@@ -202,6 +202,39 @@ STUB
 chmod +x "$TMP/shim/sudo"
 export SNOOZE_SUDO_LOG="$TMP/sudo.log"
 
+# `uninstall` ends in `exec omarchy plugin remove …`, which on a real box takes
+# the plugin away. A recording stub stands in for it, and its own canary below
+# refuses to run a single uninstall test unless that stub is the `omarchy` the
+# CLI would find.
+cat >"$TMP/shim/omarchy" <<'STUB'
+#!/usr/bin/env bash
+[[ ${1:-} == --canary ]] && { echo STUB; exit 0; }
+printf '%s\n' "$*" >>"$SNOOZE_OMARCHY_LOG"
+exit 0
+STUB
+chmod +x "$TMP/shim/omarchy"
+export SNOOZE_OMARCHY_LOG="$TMP/omarchy.log"
+
+# Both prompts read from stdin, and `check` hands the command whatever stdin the
+# test run has (a terminal, in a hand run — which would take the gum path and
+# hang). Piping the answers in makes every run non-interactive and identical.
+# A groups file one directory deeper than $TMP, too: "delete my groups" removes
+# the whole directory, and $TMP itself holds the stubs and the logs.
+uninstall_with() { # <answer to "Remove Snooze?"> <answer to "delete groups?">
+  printf '%s\n%s\n' "${1:-}" "${2:-}" \
+    | env PATH="$TMP/shim:$PATH" SNOOZE_GROUPS_FILE="$TMP/cfg/snooze/groups.json" \
+        "$SNOOZE" uninstall
+}
+
+seed_installed_state() { # what a set-up box looks like, for one uninstall run
+  mkdir -p "$TMP/cfg/snooze" "$TMP/bin" "$TMP/state"
+  cp "$HERE/defaults/groups.json" "$TMP/cfg/snooze/groups.json"
+  ln -sfn "$HERE/bin/snooze" "$TMP/bin/snooze"
+  touch "$TMP/state/.setup-done"
+  echo '{}' >"$TMP/state/session.json"
+  : >"$SNOOZE_SUDO_LOG"; : >"$SNOOZE_OMARCHY_LOG"
+}
+
 if [[ $(PATH="$TMP/shim:$PATH" sudo --canary 2>/dev/null) == STUB ]]; then
   : >"$SNOOZE_SUDO_LOG"
   touch "$TMP/state/.setup-done"
@@ -221,16 +254,50 @@ if [[ $(PATH="$TMP/shim:$PATH" sudo --canary 2>/dev/null) == STUB ]]; then
 
   check "setup rejects a typo instead of escalating" 1 env PATH="$TMP/shim:$PATH" "$SNOOZE" setup --pritn
 
-  : >"$SNOOZE_SUDO_LOG"
-  echo '{}' >"$TMP/state/session.json"
-  check "uninstall clears everything but the groups" 0 env PATH="$TMP/shim:$PATH" "$SNOOZE" uninstall
-  grep -q 'rm -f /etc/sudoers.d/snooze /usr/local/bin/snooze-helper' "$SNOOZE_SUDO_LOG" \
-    || { echo "FAIL: sudoers rule and helper not removed: $(cat "$SNOOZE_SUDO_LOG")"; fails=$((fails+1)); }
-  [[ -e $TMP/bin/snooze ]] && { echo "FAIL: symlink left behind"; fails=$((fails+1)); }
-  [[ -e $TMP/state/session.json ]] && { echo "FAIL: session left behind"; fails=$((fails+1)); }
-  [[ -e $TMP/state/.setup-done ]] && { echo "FAIL: setup flag left behind"; fails=$((fails+1)); }
-  [[ -f $TMP/groups.json ]] || { echo "FAIL: uninstall took the groups file"; fails=$((fails+1)); }
-  grep -q "$TMP/groups.json" "$TMP/out" || { echo "FAIL: uninstall did not say where the groups are"; fails=$((fails+1)); }
+  if [[ $(PATH="$TMP/shim:$PATH" omarchy --canary 2>/dev/null) == STUB ]]; then
+    # --- "no" at the first prompt: nothing happens at all
+    seed_installed_state
+    check "uninstall stops at the first no" 0 uninstall_with n n
+    grep -q 'left everything in place' "$TMP/out" \
+      || { echo "FAIL: no polite abort line: $(cat "$TMP/out")"; fails=$((fails+1)); }
+    [[ -s $SNOOZE_SUDO_LOG ]] && { echo "FAIL: a declined uninstall escalated"; fails=$((fails+1)); }
+    [[ -s $SNOOZE_OMARCHY_LOG ]] && { echo "FAIL: a declined uninstall removed the plugin"; fails=$((fails+1)); }
+    [[ -L $TMP/bin/snooze ]] || { echo "FAIL: a declined uninstall took the link"; fails=$((fails+1)); }
+    [[ -f $TMP/cfg/snooze/groups.json ]] || { echo "FAIL: a declined uninstall took the groups"; fails=$((fails+1)); }
+
+    # --- "yes, but keep my groups"
+    seed_installed_state
+    check "uninstall keeps the groups on no" 0 uninstall_with y n
+    grep -q '/usr/local/bin/snooze-helper unblock' "$SNOOZE_SUDO_LOG" \
+      || { echo "FAIL: nothing unblocked: $(cat "$SNOOZE_SUDO_LOG")"; fails=$((fails+1)); }
+    grep -q 'rm -f /etc/sudoers.d/snooze /usr/local/bin/snooze-helper' "$SNOOZE_SUDO_LOG" \
+      || { echo "FAIL: sudoers rule and helper not removed: $(cat "$SNOOZE_SUDO_LOG")"; fails=$((fails+1)); }
+    [[ -e $TMP/bin/snooze ]] && { echo "FAIL: symlink left behind"; fails=$((fails+1)); }
+    [[ -e $TMP/state/session.json ]] && { echo "FAIL: session left behind"; fails=$((fails+1)); }
+    [[ -e $TMP/state/.setup-done ]] && { echo "FAIL: setup flag left behind"; fails=$((fails+1)); }
+    [[ -f $TMP/cfg/snooze/groups.json ]] || { echo "FAIL: uninstall took the groups file"; fails=$((fails+1)); }
+    grep -q "$TMP/cfg/snooze/groups.json" "$TMP/out" \
+      || { echo "FAIL: uninstall did not say where the groups are"; fails=$((fails+1)); }
+    grep -q '^plugin remove yordanbuilds.snooze --yes$' "$SNOOZE_OMARCHY_LOG" \
+      || { echo "FAIL: the plugin was not handed to omarchy: $(cat "$SNOOZE_OMARCHY_LOG")"; fails=$((fails+1)); }
+
+    # --- "yes, and take my groups too"
+    seed_installed_state
+    check "uninstall deletes the config directory on yes" 0 uninstall_with y y
+    [[ -e $TMP/cfg/snooze ]] && { echo "FAIL: config directory survived a yes"; fails=$((fails+1)); }
+    grep -q '^plugin remove yordanbuilds.snooze --yes$' "$SNOOZE_OMARCHY_LOG" \
+      || { echo "FAIL: the plugin was not handed to omarchy"; fails=$((fails+1)); }
+
+    # --- a `snooze` in BIN_DIR that setup did not link is not ours to delete
+    seed_installed_state
+    rm -f "$TMP/bin/snooze"; printf '#!/bin/sh\n' >"$TMP/bin/snooze"
+    check "uninstall leaves a snooze it did not link" 0 uninstall_with y n
+    [[ -f $TMP/bin/snooze && ! -L $TMP/bin/snooze ]] \
+      || { echo "FAIL: uninstall deleted a file it did not create"; fails=$((fails+1)); }
+    rm -f "$TMP/bin/snooze"
+  else
+    echo "FAIL: the omarchy stub is not on PATH — refusing to run the uninstall tests"; fails=$((fails+1))
+  fi
 else
   echo "FAIL: the sudo stub is not on PATH — skipped the privileged-plan tests"; fails=$((fails+1))
 fi

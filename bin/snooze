@@ -25,6 +25,18 @@ MAX_DOMAINS=500
 die() { echo "snooze: $1" >&2; exit 1; }
 now() { echo "${SNOOZE_NOW:-$(date +%s)}"; }
 
+confirm() { # <prompt> — gum when interactive, plain read otherwise. A closed
+            # stdin reads as "no": nothing destructive happens by default.
+  if command -v gum >/dev/null 2>&1 && [[ -t 0 ]]; then
+    gum confirm "$1"
+  else
+    printf '%s [y/N] ' "$1"
+    local r
+    read -r r || return 1
+    [[ $r == y || $r == Y ]]
+  fi
+}
+
 run_helper() {
   local verb=$1; shift
   if [[ -n ${SNOOZE_HELPER:-} ]]; then
@@ -367,13 +379,35 @@ cmd_setup() { # one password prompt, and only for the two commands printed below
   poke
 }
 
-cmd_uninstall() { # one sudo authorization; your groups file is not ours to delete
+cmd_uninstall() { # one command, one sudo authorization: everything setup added,
+                  # then the plugin itself. Your groups are a separate question.
   (( $# == 0 )) || die "uninstall: unexpected argument: $1"
+  local config_dir
+  config_dir=$(dirname "$USER_GROUPS_FILE")
+
+  echo "This removes Snooze: the plugin, the root helper, its sudoers rule and the CLI link."
+  confirm "Remove Snooze?" || { echo "snooze: left everything in place"; return 0; }
+  local purge=n
+  # Never let a surprising path turn a "yes" into a wider delete than the user
+  # was asked about.
+  if [[ -n $config_dir && $config_dir != / && $config_dir != "$HOME" ]] \
+    && confirm "Also delete your groups in $config_dir?"; then purge=y; fi
+
   cancel_timer
   sudo "$HELPER_TARGET" unblock 2>/dev/null || true # leave nothing blocked behind
   sudo rm -f /etc/sudoers.d/snooze "$HELPER_TARGET"
-  rm -f "$BIN_DIR/snooze" "$SESSION_FILE" "$STATE_DIR/.setup-done"
-  echo "snooze: removed helper, sudoers rule, symlink. Your groups file is kept at $USER_GROUPS_FILE."
+  # Setup promised to leave a `snooze` it did not create alone; so does this.
+  # (An `&&` one-liner would end the run here under `set -e` when the link is
+  # already gone.)
+  if [[ -L $BIN_DIR/snooze ]]; then rm -f "$BIN_DIR/snooze"; fi
+  rm -f "$SESSION_FILE" "$STATE_DIR/.setup-done"
+  if [[ $purge == y ]]; then
+    rm -rf "$config_dir"
+  else
+    echo "snooze: your groups are kept at $USER_GROUPS_FILE"
+  fi
+
+  exec omarchy plugin remove yordanbuilds.snooze --yes
 }
 
 usage() {
@@ -389,7 +423,8 @@ snooze — block distracting sites for a while
   snooze status [--json]  what is blocked, and for how long
   snooze setup [--force]  install the root helper and the one sudo rule it
                           needs (--print shows the plan, runs none of it)
-  snooze uninstall        remove the helper, the sudo rule and the link
+  snooze uninstall        remove Snooze: the helper, the sudo rule, the link
+                          and the plugin (asks about your groups first)
 
 Durations look like 30m, 2h or 1h30m. Groups live in ~/.config/snooze/groups.json.
 EOF
