@@ -153,4 +153,86 @@ grep -q '^0.0.0.0 ok.com$' "$TMP/hosts" || { echo "FAIL: valid sibling not block
 grep -q "$long" "$TMP/hosts" && { echo "FAIL: over-long domain reached the hosts file"; fails=$((fails+1)); }
 check "stop after expansion checks" 0 "$SNOOZE" stop
 
+# ---------- setup (dry) ----------
+check "setup --print never escalates" 0 env -u SNOOZE_HELPER "$SNOOZE" setup --print
+grep -q 'NOPASSWD: /usr/local/bin/snooze-helper' "$TMP/out" || { echo "FAIL: sudoers line missing"; fails=$((fails+1)); }
+grep -q 'install -Dm755' "$TMP/out" || { echo "FAIL: helper install missing"; fails=$((fails+1)); }
+staged=$(mktemp)
+echo '%wheel ALL=(root) NOPASSWD: /usr/local/bin/snooze-helper' >"$staged"
+check "sudoers line passes visudo" 0 visudo -cf "$staged"
+rm -f "$staged"
+check "setup seeds default groups" 0 bash -c 'rm -f "$SNOOZE_GROUPS_FILE"; "$0" setup --print >/dev/null; test -f "$SNOOZE_GROUPS_FILE"' "$SNOOZE"
+jq -e '.version == 1 and (.groups | length) == 3' "$TMP/groups.json" >/dev/null || { echo "FAIL: seeded groups"; fails=$((fails+1)); }
+
+# --- the link: a stale one (the plugin moved) is repointed, a real file is not
+ln -sfn "$TMP/gone" "$TMP/bin/snooze"
+check "setup repoints a stale link" 0 env -u SNOOZE_HELPER "$SNOOZE" setup --print
+[[ $(readlink "$TMP/bin/snooze") == "$HERE/bin/snooze" ]] || { echo "FAIL: stale link not repointed"; fails=$((fails+1)); }
+rm -f "$TMP/bin/snooze"; printf '#!/bin/sh\n' >"$TMP/bin/snooze"
+check "setup leaves a file it did not make" 0 env -u SNOOZE_HELPER "$SNOOZE" setup --print
+grep -q 'left it alone' "$TMP/out" || { echo "FAIL: no warning about a foreign snooze"; fails=$((fails+1)); }
+[[ -L $TMP/bin/snooze ]] && { echo "FAIL: overwrote a file it did not make"; fails=$((fails+1)); }
+rm -f "$TMP/bin/snooze"
+
+# ---------- setup state as `status` sees it (SNOOZE_HELPER_BIN is a test seam) ----------
+printf '#!/usr/bin/env bash\necho 0\n' >"$TMP/oldhelper"; chmod +x "$TMP/oldhelper"
+printf '#!/usr/bin/env bash\necho %s\n' "$(sed -n 's/^VERSION=//p' "$HERE/bin/snooze-helper")" >"$TMP/curhelper"
+chmod +x "$TMP/curhelper"
+touch "$TMP/state/.setup-done"
+check "status reports a missing helper" 0 env -u SNOOZE_HELPER SNOOZE_HELPER_BIN="$TMP/nope" "$SNOOZE" status --json
+jq -e '.setup == "missing"' "$TMP/out" >/dev/null || { echo "FAIL: missing helper: $(cat "$TMP/out")"; fails=$((fails+1)); }
+check "status reports an outdated helper" 0 env -u SNOOZE_HELPER SNOOZE_HELPER_BIN="$TMP/oldhelper" "$SNOOZE" status --json
+jq -e '.setup == "outdated"' "$TMP/out" >/dev/null || { echo "FAIL: outdated helper: $(cat "$TMP/out")"; fails=$((fails+1)); }
+check "status reports a current helper" 0 env -u SNOOZE_HELPER SNOOZE_HELPER_BIN="$TMP/curhelper" "$SNOOZE" status --json
+jq -e '.setup == "ok"' "$TMP/out" >/dev/null || { echo "FAIL: current helper: $(cat "$TMP/out")"; fails=$((fails+1)); }
+
+# ---------- the privileged plan, with sudo replaced by a recording stub ----------
+# Nothing below may reach the real sudo: the stub is proven to be on PATH first
+# (a canary the real sudo would reject as a bad option), and the privileged
+# tests only run when that proof holds.
+mkdir -p "$TMP/shim"
+cat >"$TMP/shim/sudo" <<'STUB'
+#!/usr/bin/env bash
+[[ ${1:-} == --canary ]] && { echo STUB; exit 0; }
+printf '%s\n' "$*" >>"$SNOOZE_SUDO_LOG"
+args=("$@") # `install -Dm440 <staged> /etc/sudoers.d/snooze`: keep what it would install
+[[ ${args[-1]} == /etc/sudoers.d/snooze ]] && cp "${args[-2]}" "$SNOOZE_SUDO_LOG.sudoers"
+exit 0
+STUB
+chmod +x "$TMP/shim/sudo"
+export SNOOZE_SUDO_LOG="$TMP/sudo.log"
+
+if [[ $(PATH="$TMP/shim:$PATH" sudo --canary 2>/dev/null) == STUB ]]; then
+  : >"$SNOOZE_SUDO_LOG"
+  touch "$TMP/state/.setup-done"
+  check "setup stops at the flag" 0 env PATH="$TMP/shim:$PATH" "$SNOOZE" setup
+  grep -q 'already set up' "$TMP/out" || { echo "FAIL: no already-set-up message"; fails=$((fails+1)); }
+  [[ -s $SNOOZE_SUDO_LOG ]] && { echo "FAIL: a set-up box escalated anyway"; fails=$((fails+1)); }
+
+  check "setup --force re-runs the privileged steps" 0 env PATH="$TMP/shim:$PATH" "$SNOOZE" setup --force
+  grep -q "install -Dm755 -o root -g root $HERE/bin/snooze-helper /usr/local/bin/snooze-helper" "$SNOOZE_SUDO_LOG" \
+    || { echo "FAIL: helper not installed root-owned: $(cat "$SNOOZE_SUDO_LOG")"; fails=$((fails+1)); }
+  grep -q 'install -Dm440 -o root -g root .* /etc/sudoers.d/snooze' "$SNOOZE_SUDO_LOG" \
+    || { echo "FAIL: sudoers rule not installed 440 root:root"; fails=$((fails+1)); }
+  [[ $(cat "$SNOOZE_SUDO_LOG.sudoers" 2>/dev/null) == '%wheel ALL=(root) NOPASSWD: /usr/local/bin/snooze-helper' ]] \
+    || { echo "FAIL: staged sudoers content"; fails=$((fails+1)); }
+  [[ -f $TMP/state/.setup-done ]] || { echo "FAIL: setup flag not written"; fails=$((fails+1)); }
+  [[ -L $TMP/bin/snooze ]] || { echo "FAIL: CLI not linked into BIN_DIR"; fails=$((fails+1)); }
+
+  check "setup rejects a typo instead of escalating" 1 env PATH="$TMP/shim:$PATH" "$SNOOZE" setup --pritn
+
+  : >"$SNOOZE_SUDO_LOG"
+  echo '{}' >"$TMP/state/session.json"
+  check "uninstall clears everything but the groups" 0 env PATH="$TMP/shim:$PATH" "$SNOOZE" uninstall
+  grep -q 'rm -f /etc/sudoers.d/snooze /usr/local/bin/snooze-helper' "$SNOOZE_SUDO_LOG" \
+    || { echo "FAIL: sudoers rule and helper not removed: $(cat "$SNOOZE_SUDO_LOG")"; fails=$((fails+1)); }
+  [[ -e $TMP/bin/snooze ]] && { echo "FAIL: symlink left behind"; fails=$((fails+1)); }
+  [[ -e $TMP/state/session.json ]] && { echo "FAIL: session left behind"; fails=$((fails+1)); }
+  [[ -e $TMP/state/.setup-done ]] && { echo "FAIL: setup flag left behind"; fails=$((fails+1)); }
+  [[ -f $TMP/groups.json ]] || { echo "FAIL: uninstall took the groups file"; fails=$((fails+1)); }
+  grep -q "$TMP/groups.json" "$TMP/out" || { echo "FAIL: uninstall did not say where the groups are"; fails=$((fails+1)); }
+else
+  echo "FAIL: the sudo stub is not on PATH — skipped the privileged-plan tests"; fails=$((fails+1))
+fi
+
 echo; [[ $fails -eq 0 ]] && echo "scripts: all ok" || { echo "scripts: $fails failure(s)"; exit 1; }

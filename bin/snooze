@@ -8,11 +8,16 @@ SELF=$(readlink -f "${BASH_SOURCE[0]}")
 PLUGIN_DIR=$(dirname "$(dirname "$SELF")")
 STATE_DIR=${SNOOZE_STATE_DIR:-$HOME/.local/state/snooze}
 GROUPS_FILE=${SNOOZE_GROUPS_FILE:-$HOME/.config/snooze/groups.json}
+USER_GROUPS_FILE=$GROUPS_FILE # what `snooze setup` seeds and `uninstall` keeps
 # Until setup copies the defaults into place, read the groups from the plugin.
 [[ -f $GROUPS_FILE ]] || GROUPS_FILE=$PLUGIN_DIR/defaults/groups.json
 SESSION_FILE=$STATE_DIR/session.json
 HOSTS_READ=${SNOOZE_HOSTS_FILE:-/etc/hosts}
-HELPER_BIN=/usr/local/bin/snooze-helper
+# Every sudo path uses HELPER_TARGET, the literal the sudoers rule names — the
+# environment must never be able to steer what runs as root. HELPER_BIN is only
+# read from (status asks it for its version), so it can take a test seam.
+HELPER_TARGET=/usr/local/bin/snooze-helper
+HELPER_BIN=${SNOOZE_HELPER_BIN:-$HELPER_TARGET}
 BIN_DIR=${SNOOZE_BIN_DIR:-$HOME/.local/bin} # where `snooze setup` links this CLI
 UNIT=snooze-wake
 MAX_DOMAINS=500
@@ -25,7 +30,7 @@ run_helper() {
   if [[ -n ${SNOOZE_HELPER:-} ]]; then
     "$SNOOZE_HELPER" "$verb" --hosts-file "${SNOOZE_HOSTS_FILE:?SNOOZE_HELPER needs SNOOZE_HOSTS_FILE}" "$@"
   else
-    sudo -n "$HELPER_BIN" "$verb" "$@"
+    sudo -n "$HELPER_TARGET" "$verb" "$@"
   fi
 }
 
@@ -313,6 +318,64 @@ cmd_status() { # never escalates: reads the hosts file and the session, nothing 
   fi
 }
 
+cmd_setup() { # one password prompt, and only for the two commands printed below
+  local force=0 print=0
+  while (( $# )); do
+    case $1 in
+      --force) force=1; shift ;;
+      --print) print=1; shift ;; # print the privileged plan, run none of it
+      *) die "setup: unexpected argument: $1" ;;
+    esac
+  done
+
+  local flag=$STATE_DIR/.setup-done
+  if [[ -e $flag ]] && (( force == 0 && print == 0 )); then
+    echo "snooze: already set up (use --force)"
+    return 0
+  fi
+
+  local sudoers_line="%wheel ALL=(root) NOPASSWD: $HELPER_TARGET"
+  echo "Snooze setup will:"
+  echo "  1. install the helper root-owned:  sudo install -Dm755 -o root -g root $PLUGIN_DIR/bin/snooze-helper $HELPER_TARGET"
+  echo "  2. allow %wheel to run only it without a password:"
+  echo "       $sudoers_line"
+  echo "     (staged to a temp file, checked with visudo -cf, installed 440 root:root)"
+  echo "  3. link the CLI into $BIN_DIR and seed default groups"
+
+  # The unprivileged half runs in both modes: it is all reversible and lives
+  # entirely under $HOME. Re-seeding also restores a groups file you deleted.
+  mkdir -p "$STATE_DIR" "$(dirname "$USER_GROUPS_FILE")" "$BIN_DIR"
+  [[ -f $USER_GROUPS_FILE ]] || cp "$PLUGIN_DIR/defaults/groups.json" "$USER_GROUPS_FILE"
+  if [[ -L $BIN_DIR/snooze || ! -e $BIN_DIR/snooze ]]; then
+    ln -sfn "$PLUGIN_DIR/bin/snooze" "$BIN_DIR/snooze" # repoints a link the plugin outgrew
+  else
+    echo "snooze: $BIN_DIR/snooze is not our symlink — left it alone"
+  fi
+
+  if (( print )); then echo "(print mode — nothing privileged executed)"; return 0; fi
+
+  sudo install -Dm755 -o root -g root "$PLUGIN_DIR/bin/snooze-helper" "$HELPER_TARGET"
+  # Not a local: the trap body is expanded when the shell exits, by which time a
+  # function-local would be gone and the staged file would outlive the run.
+  STAGED_SUDOERS=$(mktemp)
+  trap 'rm -f "$STAGED_SUDOERS"' EXIT
+  echo "$sudoers_line" >"$STAGED_SUDOERS"
+  visudo -cf "$STAGED_SUDOERS" >/dev/null || die "refusing to install an invalid sudoers file"
+  sudo install -Dm440 -o root -g root "$STAGED_SUDOERS" /etc/sudoers.d/snooze
+  touch "$flag"
+  notify "Snooze is ready" "Open the bar widget to start a session"
+  poke
+}
+
+cmd_uninstall() { # one sudo authorization; your groups file is not ours to delete
+  (( $# == 0 )) || die "uninstall: unexpected argument: $1"
+  cancel_timer
+  sudo "$HELPER_TARGET" unblock 2>/dev/null || true # leave nothing blocked behind
+  sudo rm -f /etc/sudoers.d/snooze "$HELPER_TARGET"
+  rm -f "$BIN_DIR/snooze" "$SESSION_FILE" "$STATE_DIR/.setup-done"
+  echo "snooze: removed helper, sudoers rule, symlink. Your groups file is kept at $USER_GROUPS_FILE."
+}
+
 usage() {
   cat <<'EOF'
 snooze — block distracting sites for a while
@@ -324,6 +387,9 @@ snooze — block distracting sites for a while
   snooze stop             unblock everything now
   snooze sweep [--notify] drop the block if its time is up
   snooze status [--json]  what is blocked, and for how long
+  snooze setup [--force]  install the root helper and the one sudo rule it
+                          needs (--print shows the plan, runs none of it)
+  snooze uninstall        remove the helper, the sudo rule and the link
 
 Durations look like 30m, 2h or 1h30m. Groups live in ~/.config/snooze/groups.json.
 EOF
@@ -337,6 +403,8 @@ case $verb in
   extend) cmd_extend "$@" ;;
   sweep)  cmd_sweep "$@" ;;
   status) cmd_status "$@" ;;
+  setup)  cmd_setup "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
   help|-h|--help) usage ;;
   *) die "unknown command: $verb (try: snooze help)" ;;
 esac
