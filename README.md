@@ -1,6 +1,6 @@
 # Snooze
 
-![Snooze](preview.png)
+![Block the sites that eat your morning — for an hour, or until you say stop.](preview.png)
 
 A bar widget for [Omarchy](https://omarchy.org). Pick the groups you want out
 of the way, pick a duration, and Snooze writes a marked block of `0.0.0.0`
