@@ -20,12 +20,9 @@ ln -sfn ~/code/snooze ~/.config/omarchy/plugins/yordanbuilds.snooze
 omarchy-shell shell rescanPlugins
 ```
 
-`omarchy-shell shell rescanPlugins` is what makes a freshly linked plugin — or
-an edited `manifest.json` — known to the running shell. It does not rebuild a
-bar widget that already exists: an instantiated widget keeps the QML it was
-built from, so `omarchy-restart-shell` after editing `BarWidget.qml`,
-`EditView.qml`, `Service.qml` or `Model.mjs`. Bash in `bin/` needs neither —
-the widget shells out to the CLI fresh every time.
+`rescanPlugins` makes a freshly linked plugin (or an edited `manifest.json`)
+known — but it does not rebuild an existing bar widget. After editing any QML
+or `Model.mjs`: `omarchy-restart-shell`. Bash in `bin/` needs neither.
 
 Run `snooze setup` once so the helper is in place; after that everything but
 the helper itself can be developed without sudo.
@@ -46,23 +43,15 @@ a test that needs `sudo`.
 
 ## Keeping the two halves in step
 
-`Model.mjs` is loaded by two JavaScript engines: node (tests) and Qt's QML
-engine (the plugin itself). The QML engine parses less of the language — no
-object spread or rest, no `async`, no `flatMap`/`at`/`fromEntries`, no optional
-chaining — and a parse error there makes the plugin silently fail to load while
-`node --test` stays green. `qml-smoke.sh` exists to catch exactly that, so run
-it before pushing JavaScript changes.
+`Model.mjs` runs in two engines: node (tests) and Qt's QML engine, which
+parses less of the language (no spread, `async`, `flatMap`, optional
+chaining). A parse error there fails silently while node stays green —
+`qml-smoke.sh` catches it, so run it before pushing JavaScript.
 
-`bin/snooze` re-implements two pieces of `Model.mjs` in bash, because the CLI
-must work with no shell running: the site expansion (`expandSites` →
-`expand_groups`'s jq pipeline) and the duration grammar (`parseDuration`,
-`formatRemaining` → `parse_duration`, `fmt_remaining`). Both sites carry a
-"keep in sync with Model.mjs" comment. Change one and you change the other, or
-the panel will list sites the CLI then refuses to block.
+`bin/snooze` mirrors two pieces of `Model.mjs` in bash — site expansion and
+the duration grammar — each marked with a "keep in sync" comment. Change one,
+change the other, or the panel will list sites the CLI refuses to block.
 
-Any change to `bin/snooze-helper` — behavior, validation, anything — bumps its
-`VERSION`. `snooze status` asks `/usr/local/bin/snooze-helper` for its version
-and compares it with the `VERSION=` line in the plugin directory it is running
-from; a mismatch reports `outdated`, which is what puts the setup prompt back
-in the panel. Without the bump, users keep running the old helper and nothing
-tells them.
+Any change to `bin/snooze-helper` bumps its `VERSION`. `snooze status`
+compares the installed helper's version with the bundled one; a mismatch
+reports `outdated`, which puts the setup prompt back in the panel.

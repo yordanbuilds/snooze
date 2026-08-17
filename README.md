@@ -24,29 +24,22 @@ Snooze needs Omarchy 4 or newer.
 omarchy plugin add https://github.com/yordanbuilds/snooze.git --enable
 ```
 
-Enabling asks which bar section the widget goes in (default: right). The icon
-appears with a dot on it — Snooze needs a one-time setup before it can touch
-`/etc/hosts`. Click the icon, then **Run setup**. A floating terminal opens,
-prints exactly what it is about to do, and asks for your password once:
+The icon appears with a dot on it: click it, then **Run setup**. A floating
+terminal shows the plan and asks for your password once. Setup installs:
 
-- installs the helper root-owned at `/usr/local/bin/snooze-helper`
-- writes `/etc/sudoers.d/snooze`, validated with `visudo -cf` before it lands:
+- the helper, root-owned at `/usr/local/bin/snooze-helper`
+- `/etc/sudoers.d/snooze` (`visudo`-checked):
   `%wheel ALL=(root) NOPASSWD: /usr/local/bin/snooze-helper`
-- links the `snooze` CLI into `~/.local/bin`
-- seeds `~/.config/snooze/groups.json` with the default groups
+- the `snooze` CLI in `~/.local/bin`, default groups in
+  `~/.config/snooze/groups.json`
 
-That standing passwordless rule points at one small root-owned script whose
-only power is to write `0.0.0.0 <validated-domain>` lines inside its own marked
-block of `/etc/hosts` — the worst anything can do through it is block a site.
-It cannot point a name at a real address, cannot write outside its block, and
-takes no input but its own argv.
+The passwordless rule covers one small root-owned script that can only write
+`0.0.0.0 <domain>` lines inside its own marked block of `/etc/hosts` — the
+worst anything can do through it is block a site. Audit it first with
+`snooze setup --print`.
 
-Want to read the plan before running it? `snooze setup --print` prints every
-privileged command and runs none of them (the reversible half — your groups
-file and the `~/.local/bin` link — happens either way).
-
-Updating? `omarchy plugin update yordanbuilds.snooze && omarchy restart shell`.
-If the update changed the helper, the panel asks you to run setup again.
+Updating? `omarchy plugin update yordanbuilds.snooze && omarchy restart shell` —
+if the helper changed, the panel asks for setup again.
 
 ## Usage
 
@@ -75,10 +68,9 @@ Turn that off with the widget's _Show remaining time in bar_ setting.
 
 ![Editing a group](shots/edit.png)
 
-Three groups ship by default. The pencil edits all of them — add, rename,
-delete, add or remove sites — and anything that isn't a domain is refused. It
-all lands in `~/.config/snooze/groups.json`, plain JSON you can keep in your
-dotfiles and hand-edit while the panel is open:
+Three groups ship by default; the pencil edits everything, and anything that
+isn't a domain is refused. It all lands in `~/.config/snooze/groups.json` —
+plain JSON, dotfile-friendly, hand-editable while the panel is open:
 
 ```json
 {
@@ -90,9 +82,9 @@ dotfiles and hand-edit while the panel is open:
 }
 ```
 
-Sites are bare domains. A two-label domain also blocks its `www.` form, so
-`x.com` covers `www.x.com`; anything deeper is taken as written, which is why
-Video ships `youtube.com`, `m.youtube.com` and `youtu.be` as three entries.
+Sites are bare domains; `x.com` also covers `www.x.com`. Deeper names are
+taken as written — that's why Video ships `youtube.com`, `m.youtube.com` and
+`youtu.be` separately.
 
 A session is a snapshot: edits apply to the next one, never to the block
 already in place.
@@ -113,15 +105,12 @@ snooze setup [--force] [--print]       install the helper and its one sudo rule
 snooze uninstall                       remove Snooze and the plugin (asks about your groups)
 ```
 
-Durations look like `30m`, `2h` or `1h30m`. `--group` takes the group's id —
-the `id` field in `groups.json`, which for a group made in the panel is its
-name, slugified — and repeats for as many groups as you want; leave it out and
-every group is in.
+Durations: `30m`, `2h`, `1h30m`. `--group` takes the group's `id` from
+`groups.json` and repeats; leave it out and every group is in.
 
-Nothing needs the shell to be running: `snooze` is a bash script that reads
-`/etc/hosts`, and `status` never escalates at all. A user timer sweeps an
-expired session away — and if the machine was asleep or off at the deadline,
-the widget sweeps it on the next shell start.
+The CLI works without the shell running. A user timer ends timed sessions; if
+the machine slept through the deadline, the widget sweeps the leftover on the
+next shell start.
 
 ## Known limits
 
@@ -151,14 +140,10 @@ Worth knowing before you trust it with a deadline:
 snooze uninstall
 ```
 
-One command for all of it. It prints what it is about to remove and asks first:
-anything still blocked is unblocked, then the helper, `/etc/sudoers.d/snooze`,
-the `~/.local/bin/snooze` link and the session state go, and the plugin itself
-is handed to `omarchy plugin remove`. One sudo prompt covers the privileged
-half.
-
-Your groups are a separate question, asked separately. Answer no and
-`~/.config/snooze/` stays exactly where it is, waiting for you to come back.
+It prints what it will remove and asks first: unblocks anything still blocked,
+removes the helper, the sudoers rule, the link and the session state, then
+hands the plugin to `omarchy plugin remove`. One sudo prompt. Your groups are
+a separate question — answer no and `~/.config/snooze/` stays put.
 
 ## License
 
