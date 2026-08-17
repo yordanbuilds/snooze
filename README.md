@@ -119,9 +119,11 @@ next shell start.
 
 Worth knowing before you trust it with a deadline:
 
-- **Browsers cache DNS.** Chromium holds a name for about a minute and keeps
-  open connections alive, so a tab that is already loaded can survive the start
-  of a session. Closing the tab is enough.
+- **An already-open tab can outlive the whole session.** Blocking stops new
+  DNS lookups; it cannot reach connections that already exist. A loaded SPA —
+  X, YouTube — keeps clicking along on its live sockets and service worker
+  without ever asking for the name again. Close its tabs and it's gone: the
+  next lookup hits the block.
 - **Secure DNS bypasses `/etc/hosts` entirely.** With DNS-over-HTTPS on, the
   browser resolves names over the network and never consults the system
   resolver, so Snooze cannot touch it. In Chromium: **Settings → Privacy and
