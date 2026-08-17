@@ -1,8 +1,6 @@
 # Snooze
 
-**Block the sites that eat your morning — for an hour, or until you say stop.**
-
-![The Snooze panel](shots/idle.png)
+![Snooze](preview.png)
 
 A bar widget for [Omarchy](https://omarchy.org). Pick the groups you want out
 of the way, pick a duration, and Snooze writes a marked block of `0.0.0.0`
@@ -43,8 +41,11 @@ if the helper changed, the panel asks for setup again.
 
 ## Usage
 
-Click the bar icon: groups, a duration, one button. Once a session is running,
-the panel is the countdown.
+Click the bar icon: groups, a duration, one button.
+
+![The Snooze panel](shots/idle.png)
+
+Once a session is running, the panel is the countdown.
 
 ![A running session](shots/active.png)
 
