@@ -84,7 +84,7 @@ dotfiles and hand-edit while the panel is open:
 {
   "version": 1,
   "groups": [
-    { "id": "social", "name": "Social", "icon": "󰙯",
+    { "id": "social", "name": "Social", "icon": "󰡉",
       "sites": ["facebook.com", "instagram.com", "x.com"] }
   ]
 }

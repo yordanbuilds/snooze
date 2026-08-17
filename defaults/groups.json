@@ -1,9 +1,9 @@
 {
   "version": 1,
   "groups": [
-    { "id": "social", "name": "Social", "icon": "󰙯",
+    { "id": "social", "name": "Social", "icon": "󰡉",
       "sites": ["facebook.com", "instagram.com", "x.com", "twitter.com", "tiktok.com", "reddit.com", "linkedin.com"] },
-    { "id": "video", "name": "Video", "icon": "󰗃",
+    { "id": "video", "name": "Video", "icon": "󰎁",
       "sites": ["youtube.com", "m.youtube.com", "youtu.be", "twitch.tv", "netflix.com"] },
     { "id": "news", "name": "News", "icon": "󰎕",
       "sites": ["news.ycombinator.com", "cnn.com", "bbc.com"] }
