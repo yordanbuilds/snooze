@@ -301,7 +301,15 @@ Panel {
 
         Column {
           id: column
-          width: panelFlick.width
+          // A hairline inside the Flickable's clip edge, not flush with it. A
+          // control paints its border on its own boundary, and the panel card
+          // can land on half a device pixel (a 1.25x output scale puts it
+          // there every fourth logical pixel); the scissor rect snaps to whole
+          // device pixels and then eats a border sitting exactly on the edge —
+          // "+30 min" lost its left one that way. Everything in here shifts
+          // together, so the column still reads as one flush edge.
+          x: Style.spacing.hairline
+          width: panelFlick.width - Style.spacing.hairline * 2
           spacing: Style.space(12)
 
           // The hero's trailing control resolves `root` to PanelHero, not to
@@ -507,6 +515,24 @@ Panel {
               horizontalAlignment: Text.AlignHCenter
             }
 
+            // Closes the status half of the view: above it is what is blocked
+            // and for how long, below it what can be done about that.
+            PanelSeparator {
+              foreground: root.foreground
+            }
+
+            Text {
+              width: parent.width
+              text: "Snooze is friction, not a wall — anything can be unblocked."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              // Centered like the countdown and the caption above it: one axis
+              // down the middle of everything the rule closes off.
+              horizontalAlignment: Text.AlignHCenter
+            }
+
             Row {
               id: activeActions
               width: parent.width
@@ -538,15 +564,6 @@ Panel {
                 fontFamily: root.fontFamily
                 onClicked: root.stopConfirmOpen = true
               }
-            }
-
-            Text {
-              width: parent.width
-              text: "Snooze is friction, not a wall — anything can be unblocked."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
             }
           }
 

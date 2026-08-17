@@ -23,6 +23,9 @@ Item {
   property string fontFamily: Style.font.family
 
   readonly property color dim: Qt.darker(foreground, 1.55)
+  // One gap between sections, used on both sides of every rule, so the view
+  // keeps a single rhythm no matter which section boundary you are looking at.
+  readonly property int sectionGap: Style.space(14)
   readonly property bool hasDoc: root.service
     ? (root.service.groupsDoc !== null && root.service.groupsDoc !== undefined)
     : false
@@ -280,7 +283,7 @@ Item {
   Column {
     id: content
     width: root.width
-    spacing: Style.space(14)
+    spacing: root.sectionGap
 
     Text {
       visible: root.service && root.service.enabled === true
@@ -305,196 +308,210 @@ Item {
     Repeater {
       model: root.viewGroups
 
+      // The rule that introduces a section and the section itself sit one
+      // section gap apart — the same gap the column above puts over the rule,
+      // so every rule has equal air on both sides. That is what the nesting
+      // buys: a rule inside the section would inherit the section's own
+      // tighter spacing below it and pull the next name row up.
       Column {
-        id: groupSection
+        id: groupBlock
         required property var modelData
         required property int index
 
-        readonly property string groupId: String(modelData.id)
-        readonly property string groupName: String(modelData.name || "")
-        readonly property var sites: modelData.sites instanceof Array ? modelData.sites : []
-
-        property bool siteError: false
-
         width: content.width
-        spacing: Style.space(6)
-
-        Component.onCompleted: groupSection.siteError = root.errorFor(groupSection.groupId)
+        spacing: root.sectionGap
 
         PanelSeparator {
-          visible: groupSection.index > 0
+          visible: groupBlock.index > 0
           foreground: root.foreground
         }
 
-        Row {
+        Column {
+          id: groupSection
+
+          readonly property string groupId: String(groupBlock.modelData.id)
+          readonly property string groupName: String(groupBlock.modelData.name || "")
+          readonly property var sites: groupBlock.modelData.sites instanceof Array
+            ? groupBlock.modelData.sites
+            : []
+
+          property bool siteError: false
+
           width: parent.width
           spacing: Style.space(6)
 
-          TextField {
-            id: nameField
-            width: parent.width - deleteButton.width - parent.spacing
-            foreground: root.foreground
-            font.family: root.fontFamily
-            onActiveFocusChanged: root.noteFocus(nameField, "name:" + groupSection.groupId, activeFocus)
-            // Whatever was typed and not yet saved comes back with the delegate;
-            // otherwise the field shows what the file holds.
-            Component.onCompleted: {
-              var draft = root.nameDraftFor(groupSection.groupId)
-              nameField.text = draft === null ? groupSection.groupName : draft
-              if (root.focusKey === "name:" + groupSection.groupId) nameField.forceActiveFocus()
-            }
-            Component.onDestruction: root.noteFocus(nameField, "", false)
-            onTextChanged: root.setNameDraft(groupSection.groupId, nameField.text, groupSection.groupName)
-            // Renaming to nothing is not a rename: the field goes back to the
-            // name the file still holds.
-            onEditingFinished: {
-              var wanted = String(nameField.text).trim()
-              if (wanted === "" || wanted === groupSection.groupName) {
-                nameField.text = groupSection.groupName
-                return
-              }
-              var id = groupSection.groupId
-              // The typed text is on its way to the file, so it stops being a
-              // draft here — otherwise the trimming would read back as one.
-              root.clearNameDraft(id)
-              Qt.callLater(function() { root.renameGroup(id, wanted) })
-            }
-            Keys.onPressed: function(event) {
-              if (event.key === Qt.Key_Escape) {
-                nameField.text = groupSection.groupName
-                root.releaseFocus()
-                event.accepted = true
-              }
-            }
-          }
+          Component.onCompleted: groupSection.siteError = root.errorFor(groupSection.groupId)
 
-          PanelActionButton {
-            id: deleteButton
-            iconText: "󰆴"
-            tooltipText: "Delete group"
-            size: nameField.implicitHeight
-            foreground: root.foreground
-            hoverColor: root.urgent
-            fontFamily: root.fontFamily
-            onClicked: root.askDelete(groupSection.groupId)
-          }
-        }
-
-        Column {
-          id: siteList
-          x: Style.space(4)
-          width: parent.width - x
-          spacing: Style.space(2)
-
-          Text {
-            visible: groupSection.sites.length === 0
+          Row {
             width: parent.width
-            text: "No sites yet."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+            spacing: Style.space(6)
+
+            TextField {
+              id: nameField
+              width: parent.width - deleteButton.width - parent.spacing
+              foreground: root.foreground
+              font.family: root.fontFamily
+              onActiveFocusChanged: root.noteFocus(nameField, "name:" + groupSection.groupId, activeFocus)
+              // Whatever was typed and not yet saved comes back with the delegate;
+              // otherwise the field shows what the file holds.
+              Component.onCompleted: {
+                var draft = root.nameDraftFor(groupSection.groupId)
+                nameField.text = draft === null ? groupSection.groupName : draft
+                if (root.focusKey === "name:" + groupSection.groupId) nameField.forceActiveFocus()
+              }
+              Component.onDestruction: root.noteFocus(nameField, "", false)
+              onTextChanged: root.setNameDraft(groupSection.groupId, nameField.text, groupSection.groupName)
+              // Renaming to nothing is not a rename: the field goes back to the
+              // name the file still holds.
+              onEditingFinished: {
+                var wanted = String(nameField.text).trim()
+                if (wanted === "" || wanted === groupSection.groupName) {
+                  nameField.text = groupSection.groupName
+                  return
+                }
+                var id = groupSection.groupId
+                // The typed text is on its way to the file, so it stops being a
+                // draft here — otherwise the trimming would read back as one.
+                root.clearNameDraft(id)
+                Qt.callLater(function() { root.renameGroup(id, wanted) })
+              }
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Escape) {
+                  nameField.text = groupSection.groupName
+                  root.releaseFocus()
+                  event.accepted = true
+                }
+              }
+            }
+
+            PanelActionButton {
+              id: deleteButton
+              iconText: "󰆴"
+              tooltipText: "Delete group"
+              size: nameField.implicitHeight
+              foreground: root.foreground
+              hoverColor: root.urgent
+              fontFamily: root.fontFamily
+              onClicked: root.askDelete(groupSection.groupId)
+            }
           }
 
-          Repeater {
-            model: groupSection.sites
+          Column {
+            id: siteList
+            x: Style.space(4)
+            width: parent.width - x
+            spacing: Style.space(2)
 
-            Item {
-              id: siteRow
-              required property var modelData
-              required property int index
+            Text {
+              visible: groupSection.sites.length === 0
+              width: parent.width
+              text: "No sites yet."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
 
-              width: siteList.width
-              height: Math.max(siteLabel.implicitHeight, removeButton.implicitHeight)
+            Repeater {
+              model: groupSection.sites
 
-              Text {
-                id: siteLabel
-                anchors.left: parent.left
-                anchors.right: removeButton.left
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
-                text: String(siteRow.modelData)
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideRight
-              }
+              Item {
+                id: siteRow
+                required property var modelData
+                required property int index
 
-              PanelActionButton {
-                id: removeButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                iconText: "󰅖"
-                tooltipText: "Remove site"
-                fontSize: Style.font.bodySmall
-                foreground: root.dim
-                hoverColor: root.urgent
-                fontFamily: root.fontFamily
-                onClicked: {
-                  var id = groupSection.groupId
-                  var at = siteRow.index
-                  Qt.callLater(function() { root.removeSite(id, at) })
+                width: siteList.width
+                height: Math.max(siteLabel.implicitHeight, removeButton.implicitHeight)
+
+                Text {
+                  id: siteLabel
+                  anchors.left: parent.left
+                  anchors.right: removeButton.left
+                  anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: String(siteRow.modelData)
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  elide: Text.ElideRight
+                }
+
+                PanelActionButton {
+                  id: removeButton
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: "󰅖"
+                  tooltipText: "Remove site"
+                  fontSize: Style.font.bodySmall
+                  foreground: root.dim
+                  hoverColor: root.urgent
+                  fontFamily: root.fontFamily
+                  onClicked: {
+                    var id = groupSection.groupId
+                    var at = siteRow.index
+                    Qt.callLater(function() { root.removeSite(id, at) })
+                  }
                 }
               }
             }
           }
-        }
 
-        TextField {
-          id: siteField
-          width: parent.width
-          placeholderText: "add a site…"
-          foreground: root.foreground
-          // Refused input reads urgent until the next keystroke, border and
-          // text both — a hairline alone is easy to miss.
-          color: groupSection.siteError ? root.urgent : root.foreground
-          font.family: root.fontFamily
-          Component.onCompleted: {
-            siteField.text = root.draftFor(groupSection.groupId)
-            if (root.focusKey === "site:" + groupSection.groupId) siteField.forceActiveFocus()
-          }
-          Component.onDestruction: root.noteFocus(siteField, "", false)
-          onActiveFocusChanged: root.noteFocus(siteField, "site:" + groupSection.groupId, activeFocus)
-          onTextChanged: {
-            root.setDraft(groupSection.groupId, siteField.text)
-            if (groupSection.siteError) {
-              groupSection.siteError = false
-              root.setError(groupSection.groupId, false)
+          TextField {
+            id: siteField
+            width: parent.width
+            placeholderText: "add a site…"
+            foreground: root.foreground
+            // Refused input reads urgent until the next keystroke, border and
+            // text both — a hairline alone is easy to miss.
+            color: groupSection.siteError ? root.urgent : root.foreground
+            font.family: root.fontFamily
+            Component.onCompleted: {
+              siteField.text = root.draftFor(groupSection.groupId)
+              if (root.focusKey === "site:" + groupSection.groupId) siteField.forceActiveFocus()
             }
-          }
-          // `normalizeSite` can turn perfectly confident input into something
-          // that is not a domain at all ("https://user:pw@x.com/p" → "user"),
-          // so what it produced is what gets judged — and a rejection is shown
-          // rather than swallowed.
-          onAccepted: {
-            var site = Model.normalizeSite(siteField.text)
-            if (!Model.isValidDomain(site)) {
-              groupSection.siteError = true
-              root.setError(groupSection.groupId, true)
-              siteField.forceActiveFocus()
-              return
+            Component.onDestruction: root.noteFocus(siteField, "", false)
+            onActiveFocusChanged: root.noteFocus(siteField, "site:" + groupSection.groupId, activeFocus)
+            onTextChanged: {
+              root.setDraft(groupSection.groupId, siteField.text)
+              if (groupSection.siteError) {
+                groupSection.siteError = false
+                root.setError(groupSection.groupId, false)
+              }
             }
-            var id = groupSection.groupId
-            siteField.text = ""
-            root.setDraft(id, "")
-            Qt.callLater(function() { root.addSite(id, site) })
-          }
-          Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) {
-              root.releaseFocus()
-              event.accepted = true
+            // `normalizeSite` can turn perfectly confident input into something
+            // that is not a domain at all ("https://user:pw@x.com/p" → "user"),
+            // so what it produced is what gets judged — and a rejection is shown
+            // rather than swallowed.
+            onAccepted: {
+              var site = Model.normalizeSite(siteField.text)
+              if (!Model.isValidDomain(site)) {
+                groupSection.siteError = true
+                root.setError(groupSection.groupId, true)
+                siteField.forceActiveFocus()
+                return
+              }
+              var id = groupSection.groupId
+              siteField.text = ""
+              root.setDraft(id, "")
+              Qt.callLater(function() { root.addSite(id, site) })
             }
-          }
+            Keys.onPressed: function(event) {
+              if (event.key === Qt.Key_Escape) {
+                root.releaseFocus()
+                event.accepted = true
+              }
+            }
 
-          // A refused entry has to paint its own border: the theme resolves a
-          // focused control's border to a color of its own (grey, in the
-          // default one), so tinting the ring the field already has would
-          // change nothing.
-          BorderSurface {
-            anchors.fill: parent
-            visible: groupSection.siteError
-            color: "transparent"
-            radius: Style.cornerRadius
-            borderSpec: Border.flat(root.urgent, Math.max(1, Style.normalBorderWidth))
+            // A refused entry has to paint its own border: the theme resolves a
+            // focused control's border to a color of its own (grey, in the
+            // default one), so tinting the ring the field already has would
+            // change nothing.
+            BorderSurface {
+              anchors.fill: parent
+              visible: groupSection.siteError
+              color: "transparent"
+              radius: Style.cornerRadius
+              borderSpec: Border.flat(root.urgent, Math.max(1, Style.normalBorderWidth))
+            }
           }
         }
       }
