@@ -17,7 +17,7 @@ Panel {
   // with `omarchy-shell -q yordanbuilds.snooze refresh` after every change.
   manageIpc: false
 
-  readonly property string glyph: "󰞌"
+  readonly property string glyph: "󱅻"
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
