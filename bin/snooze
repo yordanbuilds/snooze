@@ -218,7 +218,7 @@ cmd_start() {
   names=$(group_names "$ids_json")
   if (( forever )); then line="Snoozing $names — until you stop it"
   else line="Snoozing $names — $(fmt_remaining $((minutes * 60)))"; fi
-  notify "Snooze" "$line"
+  notify "Snooze" "$line — tabs already open stay alive; close them"
   poke
   echo "$line"
 }
