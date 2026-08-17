@@ -15,6 +15,19 @@ jobs:
       - name: Script tests
         run: bash tests/scripts.test.sh
 
+  # The manifest is checked by Omarchy's own validator rather than a local
+  # copy of its rules, so a tightened schema upstream fails here first.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - name: Fetch Omarchy
+        run: git clone --depth 1 https://github.com/basecamp/omarchy.git omarchy
+      - name: Validate manifest
+        run: bash omarchy/bin/omarchy-plugin-validate plugin
+
   # Model runs inside Quickshell's QML engine, which parses less JavaScript
   # than Node — this job loads it in that engine, on the distro Omarchy runs.
   qml-smoke:

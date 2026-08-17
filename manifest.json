@@ -7,7 +7,6 @@
   "license": "MIT",
   "description": "Snooze distracting sites for a while — hosts-file blocking with a timer, no browser extensions",
   "kinds": ["bar-widget"],
-  "keepLoaded": true,
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {
     "displayName": "Snooze",

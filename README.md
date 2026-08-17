@@ -38,8 +38,8 @@ The passwordless rule covers one small root-owned script that can only write
 worst anything can do through it is block a site. Audit it first with
 `snooze setup --print`.
 
-Updating? `omarchy plugin update yordanbuilds.snooze && omarchy restart shell` —
-if the helper changed, the panel asks for setup again.
+Updating? `omarchy plugin update yordanbuilds.snooze` — if the helper changed,
+the panel asks for setup again.
 
 ## Usage
 
