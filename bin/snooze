@@ -27,6 +27,17 @@ END_MARK='# <<< snooze <<<'
 die() { echo "snooze: $1" >&2; exit 1; }
 now() { echo "${SNOOZE_NOW:-$(date +%s)}"; }
 
+# Styling for the one command a human reads before answering a password prompt.
+# Only when stdout is a terminal: piped or captured output stays plain text, so
+# anything reading it — the tests, a pager, a paste into an issue — sees exactly
+# the words. Escapes are literal, so nothing here needs tput or a terminfo db.
+if [[ -t 1 ]]; then
+  BOLD=$'\e[1m'; DIM=$'\e[2m'; ACCENT=$'\e[1;36m'; OFF=$'\e[0m'
+else
+  BOLD=''; DIM=''; ACCENT=''; OFF=''
+fi
+say() { printf '%s\n' "$1"; } # never a format string: the text carries % (%wheel)
+
 confirm() { # <prompt> — gum when interactive, plain read otherwise. A closed
             # stdin reads as "no": nothing destructive happens by default.
   if command -v gum >/dev/null 2>&1 && [[ -t 0 ]]; then
@@ -357,12 +368,18 @@ cmd_setup() { # one password prompt, and only for the two commands printed below
   fi
 
   local sudoers_line="%wheel ALL=(root) NOPASSWD: $HELPER_TARGET"
-  echo "Snooze setup will:"
-  echo "  1. install the helper root-owned:  sudo install -Dm755 -o root -g root $PLUGIN_DIR/bin/snooze-helper $HELPER_TARGET"
-  echo "  2. allow %wheel to run only it without a password:"
-  echo "       $sudoers_line"
-  echo "     (staged to a temp file, checked with visudo -cf, installed 440 root:root)"
-  echo "  3. link the CLI into $BIN_DIR and seed default groups"
+  say "${BOLD}Snooze setup will:${OFF}"
+  say ""
+  say "  ${BOLD}1. Install the helper, root-owned${OFF}"
+  say "     ${DIM}sudo install -Dm755 -o root -g root $PLUGIN_DIR/bin/snooze-helper $HELPER_TARGET${OFF}"
+  say ""
+  say "  ${BOLD}2. Allow %wheel to run only it, without a password${OFF}"
+  say "     ${ACCENT}$sudoers_line${OFF}"
+  say "     ${DIM}staged to a temp file, checked with visudo -cf, installed 440 root:root${OFF}"
+  say ""
+  say "  ${BOLD}3. Link the CLI and seed the default groups${OFF}"
+  # Prose, not a command to copy — so these read better shortened to ~.
+  say "     ${DIM}${BIN_DIR/#$HOME/\~}/snooze, and ${USER_GROUPS_FILE/#$HOME/\~} if it is not there yet${OFF}"
 
   # The unprivileged half runs in both modes: it is all reversible and lives
   # entirely under $HOME. Re-seeding also restores a groups file you deleted.
@@ -374,8 +391,14 @@ cmd_setup() { # one password prompt, and only for the two commands printed below
     echo "snooze: $BIN_DIR/snooze is not our symlink — left it alone"
   fi
 
-  if (( print )); then echo "(print mode — nothing privileged executed)"; return 0; fi
+  if (( print )); then
+    say ""
+    say "${DIM}(print mode — nothing privileged executed)${OFF}"
+    return 0
+  fi
 
+  say ""
+  say "${BOLD}Your password, once — for steps 1 and 2.${OFF}"
   sudo install -Dm755 -o root -g root "$PLUGIN_DIR/bin/snooze-helper" "$HELPER_TARGET"
   # Not a local: the trap body is expanded when the shell exits, by which time a
   # function-local would be gone and the staged file would outlive the run.
