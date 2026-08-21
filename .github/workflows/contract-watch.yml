@@ -43,6 +43,7 @@ jobs:
           FILES=(
             docs/omarchy-shell.md
             docs/menu.md
+            shell/plugins/menu/MenuModel.js
             shell/services/PluginRegistry.qml
             shell/plugins/README.md
             manual/32-shell-plugins.md
